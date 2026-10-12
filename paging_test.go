@@ -1,36 +1,90 @@
 package ahasendmcp
 
 import (
+	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// listTools are the list tools and the path each reads.
-var listTools = map[string]string{
-	"list_messages": "/messages",
-	"list_domains":  "/domains",
+// listToolCase is a paged list tool, the path it reads and the arguments it
+// needs besides paging.
+type listToolCase struct {
+	path string
+	args map[string]any
+}
+
+// listTools are the paged list tools.
+var listTools = map[string]listToolCase{
+	"list_messages":            {path: "/messages"},
+	"list_domains":             {path: "/domains"},
+	"list_templates":           {path: "/templates"},
+	"list_campaign_templates":  {path: "/campaign-templates"},
+	"list_contacts":            {path: "/contacts"},
+	"list_contact_lists":       {path: "/contacts/ann@example.org/lists", args: map[string]any{"contact": "ann@example.org"}},
+	"list_lists":               {path: "/lists"},
+	"list_list_contacts":       {path: "/lists/" + testListID + "/contacts", args: map[string]any{"list_id": testListID}},
+	"list_campaigns":           {path: "/campaigns"},
+	"list_campaign_recipients": {path: "/campaigns/" + testCampaignID + "/recipients", args: map[string]any{"campaign_id": testCampaignID, "status": "Delivered"}},
+	"list_webhooks":            {path: "/webhooks"},
+	"list_routes":              {path: "/routes"},
+	"list_suppressions":        {path: "/suppressions"},
+	"list_smtp_credentials":    {path: "/smtp-credentials"},
+	"list_sub_accounts":        {path: "/sub-accounts"},
+}
+
+// unpagedListTools are list tools whose endpoint returns every item.
+var unpagedListTools = []string{"list_template_versions"}
+
+func (c listToolCase) withArgs(extra map[string]any) map[string]any {
+	args := map[string]any{}
+	maps.Copy(args, c.args)
+	maps.Copy(args, extra)
+	return args
 }
 
 func TestEveryListToolIsCovered(t *testing.T) {
 	for _, name := range toolNames("") {
-		if len(name) > 5 && name[:5] == "list_" {
-			assert.Contains(t, listTools, name)
+		if strings.HasPrefix(name, "list_") {
+			_, paged := listTools[name]
+			assert.True(t, paged || slices.Contains(unpagedListTools, name), name)
 		}
 	}
 }
 
+func TestUnpagedListToolsTakeNoLimitOrCursor(t *testing.T) {
+	cs := connect(t, testOptions(t, newFakeAPI(t)))
+	res, err := cs.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	for _, tl := range res.Tools {
+		if !slices.Contains(unpagedListTools, tl.Name) {
+			continue
+		}
+		raw, err := json.Marshal(tl.InputSchema)
+		require.NoError(t, err)
+		var schema struct {
+			Properties map[string]any `json:"properties"`
+		}
+		require.NoError(t, json.Unmarshal(raw, &schema))
+		assert.NotContains(t, schema.Properties, "limit", tl.Name)
+		assert.NotContains(t, schema.Properties, "cursor", tl.Name)
+	}
+}
+
 func TestListToolsSendDefaultLimit(t *testing.T) {
-	for name, path := range listTools {
+	for name, tc := range listTools {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeAPI(t)
-			f.handle("GET "+apiPath(path), http.StatusOK, messagePage(""))
+			f.handle("GET "+apiPath(tc.path), http.StatusOK, messagePage(""))
 			cs := connect(t, testOptions(t, f))
 
-			res := callTool(t, cs, name, map[string]any{})
+			res := callTool(t, cs, name, tc.withArgs(nil))
 			assert.False(t, res.IsError, resultText(res))
 			req := f.onlyCall(t)
 			assert.Equal(t, "20", req.Query.Get("limit"))
@@ -40,7 +94,7 @@ func TestListToolsSendDefaultLimit(t *testing.T) {
 }
 
 func TestListToolsRefuseALimitOver100(t *testing.T) {
-	for name := range listTools {
+	for name, tc := range listTools {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeAPI(t)
 			rec := &fakeRecorder{}
@@ -48,7 +102,7 @@ func TestListToolsRefuseALimitOver100(t *testing.T) {
 			opts.Recorder = rec
 			cs := connect(t, opts)
 
-			text := requireToolError(t, callTool(t, cs, name, map[string]any{"limit": 101}))
+			text := requireToolError(t, callTool(t, cs, name, tc.withArgs(map[string]any{"limit": 101})))
 			assert.Contains(t, text, "limit")
 			assert.Empty(t, f.calls())
 			assert.Equal(t, ErrorKindInvalidInput, rec.only(t).ErrorKind)
