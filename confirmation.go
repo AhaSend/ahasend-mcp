@@ -285,31 +285,23 @@ func askToConfirm(ctx context.Context, env *toolEnv, call confirmCall) (*mcp.Cal
 	}, campaignSendOutput{}, nil
 }
 
-// confirmationMessage is the question the user reads. The facts AhaSend
-// derives come first; every value the agent can write, such as names and the
-// subject, is shown through userText, so it cannot add lines that look like
-// part of the summary.
+// confirmationMessage is the question the user reads. Some clients show only
+// its first lines, so the first line gives the send time and the contact
+// count, and the next lines the campaign's name and subject. The facts
+// AhaSend derives come first; every value the agent can write, such as names
+// and the subject, is shown through userText, so it cannot add lines that
+// look like part of the summary.
 func confirmationMessage(call confirmCall, c *responses.Campaign, lists []*responses.ContactList) string {
 	var b strings.Builder
-	if call.sendAt != nil {
-		b.WriteString("Schedule this campaign?\n\n")
-		fmt.Fprintf(&b, "Send time: %s\n", sendTimeText(*call.sendAt))
-	} else {
-		b.WriteString("Send this campaign now?\n\n")
-		b.WriteString("Send time: now\n")
-	}
-	total := totalContacts(lists)
 	listWord := "lists"
 	if len(lists) == 1 {
 		listWord = "list"
 	}
-	fmt.Fprintf(&b, "Contacts on these lists: %d in total over %d %s (a contact on several lists gets the campaign once)\n", total, len(lists), listWord)
-	b.WriteString("Lists:\n")
-	if len(lists) == 0 {
-		b.WriteString("- (none)\n")
-	}
-	for _, l := range lists {
-		fmt.Fprintf(&b, "- %s: %d contacts\n", userText(l.Name), l.ContactCount)
+	reach := fmt.Sprintf("%d contacts on %d %s", totalContacts(lists), len(lists), listWord)
+	if call.sendAt != nil {
+		fmt.Fprintf(&b, "Schedule this campaign for %s, to %s?\n", sendTimeText(*call.sendAt), reach)
+	} else {
+		fmt.Fprintf(&b, "Send this campaign now to %s?\n", reach)
 	}
 	fmt.Fprintf(&b, "Campaign: %s\n", userText(c.Name))
 	subject := "(none)"
@@ -322,7 +314,14 @@ func confirmationMessage(call confirmCall, c *responses.Campaign, lists []*respo
 		sender = userText(campaignSenderText(c.From))
 	}
 	fmt.Fprintf(&b, "Sender: %s\n", sender)
-	b.WriteString("\nContact counts can change before the send.")
+	b.WriteString("Lists:\n")
+	if len(lists) == 0 {
+		b.WriteString("- (none)\n")
+	}
+	for _, l := range lists {
+		fmt.Fprintf(&b, "- %s: %d contacts\n", userText(l.Name), l.ContactCount)
+	}
+	b.WriteString("\nA contact on several lists gets the campaign once. Contact counts can change before the send.")
 	return b.String()
 }
 
