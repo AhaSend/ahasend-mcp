@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/AhaSend/ahasend-go/api"
+	"github.com/google/uuid"
 )
 
 // ToolCall.ErrorKind values.
@@ -15,7 +16,9 @@ const (
 	ErrorKindAPI4xx = "api_4xx"
 	// ErrorKindAPI5xx is a v2 API 5xx answer or a network failure.
 	ErrorKindAPI5xx = "api_5xx"
-	// ErrorKindInvalidInput is a call refused before any API call.
+	// ErrorKindInvalidInput is a call the module refused before making the
+	// API call it was asked for, such as a send over the one-off send limit or
+	// a campaign send for a campaign that is not a draft.
 	ErrorKindInvalidInput = "invalid_input"
 	// ErrorKindDeclined is a campaign send the user said no to.
 	ErrorKindDeclined = "declined"
@@ -37,6 +40,20 @@ func (e *toolError) Error() string { return e.message }
 // invalidInput refuses a call before any API call.
 func invalidInput(format string, args ...any) *toolError {
 	return &toolError{kind: ErrorKindInvalidInput, message: fmt.Sprintf(format, args...)}
+}
+
+// parseID reads a required ID argument, refusing the call when it is not an
+// ID.
+func parseID(field, value string) (uuid.UUID, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return uuid.Nil, invalidInput("%s is required.", field)
+	}
+	id, err := uuid.Parse(value)
+	if err != nil {
+		return uuid.Nil, invalidInput("%s must be an ID, such as 6b1e1f43-5d2c-4b0e-9a57-0c1f2a3b4c5d.", field)
+	}
+	return id, nil
 }
 
 // toolErrorFrom turns an error from a tool handler into a toolError with a
@@ -94,8 +111,22 @@ func apiErrorMessage(e *api.APIError) *toolError {
 				"changed on the API Keys page of the AhaSend dashboard, or by connecting again.", strings.TrimRight(message, ". ")),
 		}
 	case e.StatusCode == http.StatusNotFound:
-		return &toolError{kind: ErrorKindAPI4xx, message: "Not found in this AhaSend account."}
+		if message == "" || strings.EqualFold(message, http.StatusText(http.StatusNotFound)) {
+			return &toolError{kind: ErrorKindAPI4xx, message: "Not found in this AhaSend account."}
+		}
+		// The API's message names what was not found, such as the list a
+		// request named.
+		return &toolError{kind: ErrorKindAPI4xx, message: "Not found in this AhaSend account: " + strings.TrimRight(message, ". ") + "."}
 	case e.StatusCode == http.StatusTooManyRequests:
+		if message != "" && !strings.EqualFold(message, http.StatusText(http.StatusTooManyRequests)) {
+			// A limit with its own reason, such as a daily cap, may not
+			// lift in a moment, so the API's words are kept.
+			text := "AhaSend is limiting requests: " + strings.TrimRight(message, ". ") + ". Wait before you retry"
+			if strings.Contains(strings.ToLower(message), "daily") {
+				text += "; a daily limit lifts only the next day"
+			}
+			return &toolError{kind: ErrorKindAPI4xx, message: text + "."}
+		}
 		return rateLimited()
 	case e.StatusCode >= 500:
 		return serverFailure()
@@ -119,4 +150,35 @@ func rateLimited() *toolError {
 func isForbidden(err error) bool {
 	var apiErr *api.APIError
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden
+}
+
+// toolErrorFor maps err as toolErrorFrom does. A bare 404 (no message, or
+// only "Not Found") from a marketing tool is the answer of an account
+// without marketing, since a missing item has its own message, so it says
+// so.
+func toolErrorFor(info ToolInfo, err error) error {
+	te := toolErrorFrom(err)
+	var apiErr *api.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound || !isMarketingTool(info) {
+		return te
+	}
+	message := strings.TrimSpace(apiErr.Message)
+	if message != "" && !strings.EqualFold(message, http.StatusText(http.StatusNotFound)) {
+		return te
+	}
+	return &toolError{kind: te.kind, message: te.message + " Contacts, lists, campaigns and campaign templates " +
+		"exist only on accounts with marketing turned on."}
+}
+
+// isMarketingTool reports whether a tool works on contacts, lists, campaigns
+// or campaign templates.
+func isMarketingTool(info ToolInfo) bool {
+	for _, scope := range info.RequiredScopes {
+		for _, prefix := range []string{"contacts:", "lists:", "campaigns:"} {
+			if strings.HasPrefix(scope, prefix) {
+				return true
+			}
+		}
+	}
+	return false
 }

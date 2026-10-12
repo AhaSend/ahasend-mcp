@@ -3,8 +3,10 @@
 package ahasendmcp
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/AhaSend/ahasend-go/api"
@@ -100,11 +102,14 @@ func setToolsListCacheable(_ context.Context, req mcp.Request, c *mcp.Cacheable)
 // toolEnv is what every tool handler reads: the API client and the parts of
 // Options that change tool behaviour.
 type toolEnv struct {
-	client        *api.APIClient
-	accountID     uuid.UUID
-	scopes        []string
-	readInbound   bool
-	maxRecipients int
+	client           *api.APIClient
+	accountID        uuid.UUID
+	scopes           []string
+	readInbound      bool
+	maxRecipients    int
+	dashboardBaseURL string
+	confirmationKey  []byte
+	stateless        bool
 }
 
 func newToolEnv(opts Options) *toolEnv {
@@ -113,11 +118,14 @@ func newToolEnv(opts Options) *toolEnv {
 		maxRecipients = DefaultMaxRecipientsPerSend
 	}
 	return &toolEnv{
-		client:        opts.Client,
-		accountID:     opts.AccountID,
-		scopes:        opts.Scopes,
-		readInbound:   opts.ReadInbound,
-		maxRecipients: maxRecipients,
+		client:           opts.Client,
+		accountID:        opts.AccountID,
+		scopes:           opts.Scopes,
+		readInbound:      opts.ReadInbound,
+		maxRecipients:    maxRecipients,
+		dashboardBaseURL: strings.TrimRight(opts.DashboardBaseURL, "/"),
+		confirmationKey:  bytes.Clone(opts.ConfirmationKey),
+		stateless:        opts.Stateless,
 	}
 }
 
