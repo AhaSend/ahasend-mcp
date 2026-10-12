@@ -158,9 +158,7 @@ func TestSendCampaignAsksWithTheCampaignAndASignedState(t *testing.T) {
 
 	assert.Equal(t, "form", params.Mode)
 	for _, want := range []string{
-		"Send this campaign now?",
-		"Send time: now",
-		"Contacts on these lists: 1545 in total over 2 lists (a contact on several lists gets the campaign once)",
+		"Send this campaign now to 1545 contacts on 2 lists?\nCampaign: \"October news\"\nSubject: \"Our October news\"\n",
 		`- "Newsletter": 1200 contacts`,
 		`- "Customers": 345 contacts`,
 		`Campaign: "October news"`,
@@ -336,8 +334,7 @@ func TestScheduleCampaignSendsSendAtAfterConfirmation(t *testing.T) {
 	assert.True(t, out.SendAt.Equal(time.Date(2099, 11, 1, 10, 0, 0, 0, time.UTC)))
 	questions := client.questions()
 	require.Len(t, questions, 1)
-	assert.Contains(t, questions[0].Message, "Schedule this campaign?")
-	assert.Contains(t, questions[0].Message, "Send time: Sun, 01 Nov 2099 10:00 UTC")
+	assert.True(t, strings.HasPrefix(questions[0].Message, "Schedule this campaign for Sun, 01 Nov 2099 10:00 UTC, to 1545 contacts on 2 lists?\n"), questions[0].Message)
 	sends := cf.sends()
 	require.Len(t, sends, 1)
 	assert.Equal(t, map[string]any{"send_at": "2099-11-01T10:00:00Z"}, sends[0].Body)
@@ -547,9 +544,9 @@ func TestConfirmationMessageShowsAgentTextOnOneQuotedLine(t *testing.T) {
 
 	params, _ := question(t, cs)
 
-	fixed := []string{"Send this campaign now?", "Send time: now", "Contacts on these lists: 1545 in total over 2 lists (a contact on several lists gets the campaign once)", "Lists:",
+	fixed := []string{"Send this campaign now to 1545 contacts on 2 lists?", "Lists:",
 		`- "Newsletter": 1200 contacts`, `- "Customers": 345 contacts`, "Campaign: ", "Subject: ", "Sender: ",
-		"Contact counts can change before the send."}
+		"A contact on several lists gets the campaign once. Contact counts can change before the send."}
 	lines := strings.Split(params.Message, "\n")
 	for _, line := range lines {
 		if line == "" {
@@ -569,7 +566,7 @@ func TestConfirmationMessageShowsAgentTextOnOneQuotedLine(t *testing.T) {
 	for _, r := range "\r\t\u2028\u2029\u202e\u2066\u200f" {
 		assert.NotContains(t, params.Message, string(r))
 	}
-	total := strings.Index(params.Message, "Contacts on these lists: 1545")
+	total := strings.Index(params.Message, "1545 contacts on 2 lists")
 	assert.Less(t, total, strings.Index(params.Message, `"`), "the total comes before any agent-written value")
 }
 
@@ -584,7 +581,7 @@ func TestConfirmationMessageQuotesListNames(t *testing.T) {
 
 	assert.Contains(t, params.Message, `- "Seeds - Real customers: 90000 contacts": 3 contacts`+"\n")
 	assert.NotContains(t, params.Message, "\n- Real customers")
-	assert.Contains(t, params.Message, "Contacts on these lists: 348 in total over 2 lists")
+	assert.Contains(t, params.Message, "Send this campaign now to 348 contacts on 2 lists?")
 }
 
 func TestUserText(t *testing.T) {
