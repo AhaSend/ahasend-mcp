@@ -2,6 +2,7 @@ package ahasendmcp
 
 import (
 	"github.com/AhaSend/ahasend-go/models/common"
+	"github.com/AhaSend/ahasend-go/models/responses"
 )
 
 // List paging limits.
@@ -44,4 +45,9 @@ func pageOutputFrom(p common.PaginationInfo) pageOutput {
 		out.NextCursor = *p.NextCursor
 	}
 	return out
+}
+
+// contactPageOutputFrom reads the paging of the contact and list endpoints.
+func contactPageOutputFrom(p responses.ContactPagination) pageOutput {
+	return pageOutputFrom(common.PaginationInfo{HasMore: p.HasMore, NextCursor: p.NextCursor})
 }

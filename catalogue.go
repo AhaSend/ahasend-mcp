@@ -12,10 +12,17 @@ const (
 	ToolsetSending     = "sending"
 	ToolsetDiagnostics = "diagnostics"
 	ToolsetDomains     = "domains"
+	ToolsetTemplates   = "templates"
+	ToolsetAudience    = "audience"
+	ToolsetCampaigns   = "campaigns"
+	ToolsetManagement  = "management"
 )
 
 // toolsets lists every toolset, in catalogue order.
-var toolsets = []string{ToolsetSending, ToolsetDiagnostics, ToolsetDomains}
+var toolsets = []string{
+	ToolsetSending, ToolsetDiagnostics, ToolsetDomains,
+	ToolsetTemplates, ToolsetAudience, ToolsetCampaigns, ToolsetManagement,
+}
 
 // ToolInfo describes one tool of the catalogue.
 type ToolInfo struct {
@@ -62,6 +69,10 @@ func allTools() []tool {
 	tools = append(tools, sendingTools()...)
 	tools = append(tools, diagnosticsTools()...)
 	tools = append(tools, domainsTools()...)
+	tools = append(tools, templatesTools()...)
+	tools = append(tools, audienceTools()...)
+	tools = append(tools, campaignsTools()...)
+	tools = append(tools, managementTools()...)
 	return tools
 }
 
@@ -106,7 +117,7 @@ func newTool[In, Out any](info ToolInfo, description string, h handlerFunc[In, O
 				out, err := h(ctx, env, in)
 				if err != nil {
 					var zero Out
-					return nil, zero, toolErrorFrom(err)
+					return nil, zero, toolErrorFor(info, err)
 				}
 				return nil, out, nil
 			})
