@@ -1,0 +1,19 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - errcheck
+  exclusions:
+    warn-unused: true
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
