@@ -1,6 +1,7 @@
 package ahasendmcp
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -108,6 +109,24 @@ func TestRecorderSkipsListingAndUnknownTools(t *testing.T) {
 	_, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "send_email", Arguments: map[string]any{}})
 	require.Error(t, err)
 	assert.Empty(t, rec.calls)
+}
+
+func TestRecorderRecordsAPanickedCallAndKeepsThePanic(t *testing.T) {
+	rec := &fakeRecorder{}
+	info := ToolInfo{Name: "get_domain", Toolset: ToolsetDomains}
+	handler := recordingMiddleware(rec, map[string]ToolInfo{info.Name: info})(
+		func(context.Context, string, mcp.Request) (mcp.Result, error) {
+			panic("tool failed")
+		})
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: info.Name}}
+
+	assert.PanicsWithValue(t, "tool failed", func() {
+		_, _ = handler(t.Context(), "tools/call", req)
+	})
+	call := rec.only(t)
+	assert.Equal(t, "get_domain", call.Tool)
+	assert.False(t, call.Success)
+	assert.Equal(t, ErrorKindAPI5xx, call.ErrorKind)
 }
 
 func TestDailyLimitSaysItLiftsTheNextDay(t *testing.T) {
