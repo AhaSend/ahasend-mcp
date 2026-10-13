@@ -27,7 +27,7 @@ type ToolCall struct {
 // not recorded.
 func recordingMiddleware(rec Recorder, listed map[string]ToolInfo) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
-		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		return func(ctx context.Context, method string, req mcp.Request) (res mcp.Result, err error) {
 			call, ok := req.(*mcp.CallToolRequest)
 			if !ok || call.Params == nil {
 				return next(ctx, method, req)
@@ -38,15 +38,24 @@ func recordingMiddleware(rec Recorder, listed map[string]ToolInfo) mcp.Middlewar
 			}
 
 			start := time.Now()
-			res, err := next(ctx, method, req)
-			kind := callErrorKind(res, err)
-			rec.ToolCalled(ctx, ToolCall{
-				Tool:      info.Name,
-				Toolset:   info.Toolset,
-				Success:   kind == "",
-				ErrorKind: kind,
-				Duration:  time.Since(start),
-			})
+			returned := false
+			// The call is recorded in a defer so that a handler that panics
+			// is recorded too, before the panic goes on to the caller.
+			defer func() {
+				kind := ErrorKindAPI5xx
+				if returned {
+					kind = callErrorKind(res, err)
+				}
+				rec.ToolCalled(ctx, ToolCall{
+					Tool:      info.Name,
+					Toolset:   info.Toolset,
+					Success:   kind == "",
+					ErrorKind: kind,
+					Duration:  time.Since(start),
+				})
+			}()
+			res, err = next(ctx, method, req)
+			returned = true
 			return res, err
 		}
 	}
