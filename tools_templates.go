@@ -39,8 +39,8 @@ func templatesTools() []tool {
 			RequiredScopes: []string{"templates:read"},
 			Annotations:    annRead(),
 		}, "Returns one transactional template as sends use it (its published copy): its subject, sender, "+
-			"content and the variables a send must fill. Use it before sending the template. has_draft true "+
-			"means unpublished changes exist: get_template_draft returns them, and the content an "+
+			"content and the variables a send must fill. Use it before sending the template. "+variableKindsNote+
+			" has_draft true means unpublished changes exist: get_template_draft returns them, and the content an "+
 			"update_template call sends replaces the draft's content. "+simpleDesignNote,
 			getTemplate),
 		newTool(ToolInfo{
@@ -86,7 +86,7 @@ func templatesTools() []tool {
 			Annotations:    annRead(),
 		}, "Returns a transactional template's draft: the changes saved in the dashboard or through "+
 			"update_template that are not published yet, with their content. Use it to review changes before "+
-			"publishing them. A template without a draft returns a not-found error.",
+			"publishing them. A template without a draft returns a not-found error. "+variableKindsNote,
 			getTemplateDraft),
 		newTool(ToolInfo{
 			Name:           "discard_template_draft",
@@ -126,7 +126,7 @@ func templatesTools() []tool {
 			RequiredScopes: []string{"templates:read"},
 			Annotations:    annRead(),
 		}, "Returns one published version of a transactional template with its subject, sender, variables and "+
-			"content. Use it to compare an old version or before restoring it.",
+			"content. Use it to compare an old version or before restoring it. "+variableKindsNote,
 			getTemplateVersion),
 		newTool(ToolInfo{
 			Name:           "restore_template_version",
@@ -215,16 +215,36 @@ func replyToFrom(a *common.SenderAddress) string {
 	return a.Email
 }
 
+// variableKindsNote tells an agent where to find what a template variable
+// takes.
+const variableKindsNote = "Each variable's kind tells what to send for it, and a list variable takes an array of " +
+	"objects with its item_fields as keys."
+
 // templateVariable is a variable a template's design uses.
 type templateVariable struct {
 	Name     string `json:"name" jsonschema:"Variable name, as substitutions name it."`
 	Required bool   `json:"required" jsonschema:"True when a send must give a value for it."`
+	Kind     string `json:"kind" jsonschema:"What to send for it. value: text or a number that the email shows. condition: it only decides whether a part of the email shows; send a non-empty value to show the part, and omit it or send \"\", false, 0, null, [] or {} to hide it (the strings \"false\" and \"0\" are not empty); if the design compares it, send a value that meets the comparison. list: an array, and a part of the email repeats once for each element. Any other value is a kind this server does not know: read the content to see how the design uses the variable."`
+	// ItemFields is set only for a list, and is empty rather than absent
+	// when the repeated part uses nothing from its elements.
+	ItemFields *[]string `json:"item_fields,omitempty" jsonschema:"Only for a list: the keys of each element. Send each element as an object with these keys, such as [{\"name\": \"Linen shirt\", \"price\": \"49.00\"}]. When it is [\"value\"], plain values also work, such as [\"new\", \"sale\"]. When it is empty, send one element of any type for each repeat."`
 }
 
 func templateVariablesFrom(vars []responses.TemplateVariable) []templateVariable {
 	out := make([]templateVariable, 0, len(vars))
 	for _, v := range vars {
-		out = append(out, templateVariable{Name: v.Name, Required: v.Required})
+		tv := templateVariable{Name: v.Name, Required: v.Required, Kind: v.Kind}
+		// A kind this module does not know passes through unchanged, so the
+		// agent can read the content to see what the design wants.
+		switch v.Kind {
+		case "":
+			// An API without kinds treats every variable as a value.
+			tv.Kind = responses.TemplateVariableKindValue
+		case responses.TemplateVariableKindList:
+			fields := append([]string{}, v.ItemFields...)
+			tv.ItemFields = &fields
+		}
+		out = append(out, tv)
 	}
 	return out
 }
