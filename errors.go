@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/AhaSend/ahasend-go/api"
+	"github.com/AhaSend/ahasend-go/models/common"
 	"github.com/google/uuid"
 )
 
@@ -131,12 +132,39 @@ func apiErrorMessage(e *api.APIError) *toolError {
 	case e.StatusCode >= 500:
 		return serverFailure()
 	default:
-		// 400, 409, 422 and every other 4xx: the API's own message.
-		return &toolError{
-			kind:    ErrorKindAPI4xx,
-			message: fmt.Sprintf("AhaSend refused the request (HTTP %d): %s", e.StatusCode, message),
+		// 400, 409, 422 and every other 4xx: the API's own message, and the
+		// problems of refused AhaML.
+		text := fmt.Sprintf("AhaSend refused the request (HTTP %d): %s", e.StatusCode, message)
+		if len(e.Errors) > 0 {
+			text = strings.TrimRight(text, ". ") + ". Fix these problems in markup, then write it again:" +
+				markupProblemsText(e.Errors)
+		}
+		return &toolError{kind: ErrorKindAPI4xx, message: text}
+	}
+}
+
+// markupProblemsText lists AhaML problems, one per line, each with every
+// field the API gave.
+func markupProblemsText(problems []common.MarkupProblem) string {
+	var b strings.Builder
+	for _, p := range problems {
+		b.WriteString("\n- ")
+		var place []string
+		if p.Line > 0 {
+			place = append(place, fmt.Sprintf("line %d, column %d", p.Line, p.Column))
+		}
+		if p.Path != "" {
+			place = append(place, p.Path)
+		}
+		if len(place) > 0 {
+			b.WriteString(strings.Join(place, ", ") + ": ")
+		}
+		fmt.Fprintf(&b, "%s [%s].", strings.TrimRight(p.Message, ". "), p.Code)
+		if p.Hint != "" {
+			fmt.Fprintf(&b, " Hint: %s.", strings.TrimRight(p.Hint, ". "))
 		}
 	}
+	return b.String()
 }
 
 func rateLimited() *toolError {

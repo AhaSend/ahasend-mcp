@@ -18,11 +18,10 @@ func TestTemplateTools(t *testing.T) {
 		"subject":      "Hello", "preheader": "", "variables": []map[string]any{},
 		"content": map[string]any{"html": "<p>VERSION-HTML</p>"},
 	}
-	draft := map[string]any{
-		"object": "template_draft", "template_id": testTemplateID, "updated_at": fixtureTime,
-		"subject": "Draft subject", "preheader": "", "variables": []map[string]any{{"name": "code", "required": true}},
-		"content": map[string]any{"html": "<p>DRAFT-HTML</p>"},
-	}
+	published := templateJSON()
+	published["subject"] = "Published subject"
+	published["variables"] = []map[string]any{{"name": "code", "required": true}}
+	published["content"] = map[string]any{"html": "<p>PUBLISHED-HTML</p>"}
 
 	runToolCases(t, []toolCase{
 		{
@@ -75,10 +74,11 @@ func TestTemplateTools(t *testing.T) {
 			check: func(t *testing.T, out map[string]any) { assert.Equal(t, "Template deleted", out["message"]) },
 		},
 		{
-			tool: "get_template_draft", args: map[string]any{"template_id": testTemplateID},
-			method: http.MethodGet, path: tpl + "/draft", resp: draft,
+			tool: "get_published_template", args: map[string]any{"template_id": testTemplateID},
+			method: http.MethodGet, path: tpl + "/published", resp: published,
 			check: func(t *testing.T, out map[string]any) {
-				assert.Equal(t, "<p>DRAFT-HTML</p>", field(t, out, "content.html"))
+				assert.Equal(t, "Published subject", out["subject"])
+				assert.Equal(t, "<p>PUBLISHED-HTML</p>", field(t, out, "content.html"))
 				assert.Equal(t, "code", field(t, out, "variables.0.name"))
 			},
 		},
@@ -291,7 +291,7 @@ func TestTemplateToolsSayWhatEachVariableKindTakes(t *testing.T) {
 			require.NoError(t, err)
 		}
 	}
-	for _, name := range []string{"get_template", "get_template_draft", "get_template_version", "send_template_email"} {
+	for _, name := range []string{"get_template", "get_published_template", "get_template_version", "send_template_email"} {
 		assert.Contains(t, descriptions[name], "kind", name)
 		assert.Contains(t, descriptions[name], "item_fields", name)
 	}

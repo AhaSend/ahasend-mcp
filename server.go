@@ -78,6 +78,7 @@ func NewServer(impl *mcp.Implementation, opts Options) (*mcp.Server, error) {
 		t.add(server, t.mcpTool(env), env)
 		listed[t.info.Name] = t.info
 	}
+	addResources(server)
 	// Each middleware added wraps the ones before it, so the recorder sees
 	// the blocked answer.
 	if opts.Blocked != "" {

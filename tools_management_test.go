@@ -59,6 +59,11 @@ func TestManagementTools(t *testing.T) {
 				"on_reception": false, "on_delivered": true, "on_transient_error": false, "on_failed": false,
 				"on_bounced": true, "on_suppressed": false, "on_opened": false, "on_clicked": false,
 				"on_suppression_created": false, "on_dns_error": false,
+				// ahasend-go sends every event setting; this server does not offer the newer ones yet.
+				"on_unsubscribed": false, "on_complained": false, "on_suppression_deleted": false,
+				"on_contact_created": false, "on_contact_updated": false, "on_contact_deleted": false,
+				"on_contact_added_to_list": false, "on_contact_removed_from_list": false,
+				"on_contact_subscribed": false, "on_contact_unsubscribed": false, "on_contact_complained": false,
 				"scope": "scoped", "domains": []any{"mail.example.com"},
 			},
 			check: func(t *testing.T, out map[string]any) { assert.Equal(t, webhookSecret, out["secret"]) },

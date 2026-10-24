@@ -67,7 +67,7 @@ picks scopes.
 | `sending` | `send_email`, `send_conversation_email`, `send_template_email`, `cancel_scheduled_email` |
 | `diagnostics` | `list_messages`, `get_message`, `diagnose_message`, `get_deliverability_stats`, `get_bounce_stats`, `get_delivery_time_stats` |
 | `domains` | `list_domains`, `get_domain`, `add_domain`, `check_domain_dns`, `update_domain`, `delete_domain` |
-| `templates` | `list_templates`, `get_template`, `create_template`, `update_template`, `delete_template`, `get_template_draft`, `discard_template_draft`, `publish_template`, `list_template_versions`, `get_template_version`, `restore_template_version`, `list_campaign_templates`, `get_campaign_template`, `create_campaign_template`, `update_campaign_template`, `delete_campaign_template` |
+| `templates` | `list_templates`, `get_template`, `get_published_template`, `create_template`, `update_template`, `delete_template`, `discard_template_draft`, `publish_template`, `list_template_versions`, `get_template_version`, `restore_template_version`, `list_campaign_templates`, `get_campaign_template`, `create_campaign_template`, `update_campaign_template`, `delete_campaign_template` |
 | `audience` | `list_contacts`, `get_contact`, `create_contact`, `upsert_contacts`, `update_contact`, `delete_contact`, `list_contact_lists`, `list_lists`, `get_list`, `create_list`, `update_list`, `delete_list`, `list_list_contacts`, `add_contacts_to_list`, `upsert_list_contact`, `remove_contact_from_list` |
 | `campaigns` | `list_campaigns`, `get_campaign`, `create_campaign`, `update_campaign`, `delete_campaign`, `duplicate_campaign`, `send_campaign_test`, `send_campaign`, `schedule_campaign`, `unschedule_campaign`, `get_campaign_stats`, `list_campaign_recipients` |
 | `management` | `get_account`, `list_webhooks`, `get_webhook`, `create_webhook`, `update_webhook`, `delete_webhook`, `list_routes`, `get_route`, `create_route`, `update_route`, `delete_route`, `list_suppressions`, `add_suppression`, `remove_suppression`, `list_smtp_credentials`, `get_smtp_credential`, `delete_smtp_credential`, `list_sub_accounts`, `get_sub_account`, `create_sub_account`, `update_sub_account`, `get_sub_account_usage` |
@@ -82,6 +82,19 @@ cursor to get the next page.
 There are no tools to create API keys or SMTP credentials, change account
 settings, billing or team members, remove all suppressions, or delete or
 suspend sub-accounts.
+
+## Simple Editor designs and AhaML
+
+The template, campaign template and campaign tools read and write a design
+of the dashboard's Simple Editor as AhaSend Markup (AhaML), an XML form of
+the design, in the content's `markup` field. `get_template` returns a
+template's working copy, the draft while one exists, so an agent edits what
+it read; `get_published_template` returns the copy a send uses.
+
+The server has one resource, `ahasend://docs/ahaml`: the AhaML reference,
+with every tag, attribute, limit and error code. It is also at
+<https://ahasend.com/docs/send-api/ahaml>. The resource is listed on every
+connection, so an agent without web access can read it.
 
 ## Safety rules
 
@@ -105,7 +118,9 @@ received email. When it is on, received messages are marked
 ## Errors
 
 When the API refuses a call, the tool returns an error with the API's
-message and what to do next.
+message and what to do next. When it refuses AhaML, the error lists the
+problems, up to the first 100, each with its code, line, column, path and
+hint; the API's message gives how many there are.
 
 ## Trying it locally
 

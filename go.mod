@@ -3,7 +3,7 @@ module github.com/AhaSend/ahasend-mcp
 go 1.25.0
 
 require (
-	github.com/AhaSend/ahasend-go v0.4.0
+	github.com/AhaSend/ahasend-go v0.4.1-0.20261026114414-09497a7180fc
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/stretchr/testify v1.11.1

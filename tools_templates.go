@@ -11,9 +11,34 @@ import (
 	"github.com/google/uuid"
 )
 
-const simpleDesignNote = "A simple design (editor simple, made in the dashboard's visual editor) can be " +
-	"changed only in the dashboard: html and mjml are refused for it, while its name, subject, preview text, " +
-	"sender and text can still change here."
+// ahamlSummary says what AhaML is and where its reference is. Each tool whose
+// content takes or returns markup holds it, through ahamlReadNote,
+// ahamlWriteNote or ahamlUpdateNote.
+const ahamlSummary = "A Simple Editor design (editor simple, the dashboard's visual editor) is read and written " +
+	"as AhaSend Markup (AhaML) in markup: XML with a tag for each part, such as " +
+	`<Email version="1"><Heading level="1">Hi <Var name="first_name" fallback="there"/></Heading>` +
+	`<Paragraph><Bold>Your order</Bold> has shipped.</Paragraph><Button url="https://example.com/orders">Track it</Button></Email>. ` +
+	"A variable in text is a <Var> tag, not {{ }}. The AhaML reference is the resource " + ahamlReferenceURI +
+	", also at https://ahasend.com/docs/send-api/ahaml."
+
+// ahamlReadNote is the AhaML part of the description of a tool that returns
+// content.
+const ahamlReadNote = ahamlSummary + " content.markup holds the design as AhaML, which update tools take " +
+	"back. When AhaML cannot be made, markup is missing and markup_error says why, such as for a design with " +
+	"an HTML block."
+
+// ahamlWriteNote is the AhaML part of the description of a tool that creates
+// a design.
+const ahamlWriteNote = ahamlSummary + " markup sets the whole design; what it leaves out takes its default. " +
+	"It is only for a Simple Editor design; where no editor is set yet, as on a create, it means editor simple. " +
+	"html beside markup is ignored; mjml beside it is refused. Markup sent back as read is checked too: a " +
+	"design that breaks an AhaML rule, such as an http: image, is refused, naming the block. A refusal lists " +
+	"up to 100 problems, with line, column and path; its message gives the total. Warnings come back in " +
+	"markup_warnings."
+
+// ahamlUpdateNote is the AhaML part of the description of a tool that changes
+// a design.
+const ahamlUpdateNote = ahamlWriteNote + " A dashboard editor that was open before this write can save over it."
 
 // The campaign template tools also require campaigns:read: their endpoints
 // exist only for an account with marketing on, and only such an account's
@@ -38,22 +63,34 @@ func templatesTools() []tool {
 			Toolset:        ToolsetTemplates,
 			RequiredScopes: []string{"templates:read"},
 			Annotations:    annRead(),
-		}, "Returns one transactional template as sends use it (its published copy): its subject, sender, "+
-			"content and the variables a send must fill. Use it before sending the template. "+variableKindsNote+
-			" has_draft true means unpublished changes exist: get_template_draft returns them, and the content an "+
-			"update_template call sends replaces the draft's content. "+simpleDesignNote,
+		}, "Returns one transactional template's working copy, with its subject, sender, variables and "+
+			"content: its draft while one exists (has_draft true), and its published copy otherwise. Use it to "+
+			"read a template to edit; update_template takes its content back. To send the template, read "+
+			"get_published_template, which holds the variables a send must fill. "+variableKindsNote+" "+ahamlReadNote,
 			getTemplate),
+		newTool(ToolInfo{
+			Name:           "get_published_template",
+			Title:          "Get published template",
+			Toolset:        ToolsetTemplates,
+			RequiredScopes: []string{"templates:read"},
+			Annotations:    annRead(),
+		}, "Returns one transactional template as sends use it (its published copy): its subject, sender, "+
+			"content and the variables a send must fill. Use it before sending the template. has_draft true "+
+			"means unpublished changes exist, which get_template returns. A template never published has no "+
+			"content. "+variableKindsNote+" "+ahamlReadNote,
+			getPublishedTemplate),
 		newTool(ToolInfo{
 			Name:           "create_template",
 			Title:          "Create template",
 			Toolset:        ToolsetTemplates,
 			RequiredScopes: []string{"templates:write"},
 			Annotations:    annWrite(),
-		}, "Creates a transactional template from HTML or MJML, with an optional plain text version. Use it to "+
-			"build a template that send_template_email sends. The content goes to the template's draft, and "+
+		}, "Creates a transactional template from AhaML, HTML or MJML, with an optional plain text version. Use "+
+			"it to build a template that send_template_email sends. The content goes to the template's draft, and "+
 			"sends fail until it is published: set publish to true, or call publish_template later. Without "+
-			"text, the text is made from the HTML. The result is the published copy, without its content: "+
-			"unless publish was set it is still empty, and has_draft and get_template_draft show what was written.",
+			"text, the text is made from the HTML. The result is the template as written, its draft unless "+
+			"publish was set, with its variables but without its content; get_template returns the content. "+
+			ahamlWriteNote,
 			createTemplate),
 		newTool(ToolInfo{
 			Name:           "update_template",
@@ -65,9 +102,10 @@ func templatesTools() []tool {
 			"the fields given change. The name changes at once; every "+
 			"other field goes to the template's draft, the same draft the dashboard edits, so sends keep the "+
 			"published copy until the draft is published (publish true, or publish_template). The editor "+
-			"cannot change: give mjml for an advanced template and html for an html template. "+simpleDesignNote+
-			" The result is the published copy, without its content: unless publish was set it does not show "+
-			"the change, and has_draft and get_template_draft show what was written.",
+			"cannot change: give markup for a Simple Editor template, mjml for an advanced template and html for an "+
+			"html template. Read the content to edit from get_template. The result is the template as written, "+
+			"its draft while one exists, with its variables but without its content; get_template returns the "+
+			"content. "+ahamlUpdateNote,
 			updateTemplate),
 		newTool(ToolInfo{
 			Name:           "delete_template",
@@ -78,16 +116,6 @@ func templatesTools() []tool {
 		}, "Deletes a transactional template; sends of it fail from then on. Use it only when the user asks to "+
 			"remove the template. The result is AhaSend's confirmation.",
 			deleteTemplate),
-		newTool(ToolInfo{
-			Name:           "get_template_draft",
-			Title:          "Get template draft",
-			Toolset:        ToolsetTemplates,
-			RequiredScopes: []string{"templates:read"},
-			Annotations:    annRead(),
-		}, "Returns a transactional template's draft: the changes saved in the dashboard or through "+
-			"update_template that are not published yet, with their content. Use it to review changes before "+
-			"publishing them. A template without a draft returns a not-found error. "+variableKindsNote,
-			getTemplateDraft),
 		newTool(ToolInfo{
 			Name:           "discard_template_draft",
 			Title:          "Discard template draft",
@@ -126,7 +154,7 @@ func templatesTools() []tool {
 			RequiredScopes: []string{"templates:read"},
 			Annotations:    annRead(),
 		}, "Returns one published version of a transactional template with its subject, sender, variables and "+
-			"content. Use it to compare an old version or before restoring it. "+variableKindsNote,
+			"content. Use it to compare an old version or before restoring it. "+variableKindsNote+" "+ahamlReadNote,
 			getTemplateVersion),
 		newTool(ToolInfo{
 			Name:           "restore_template_version",
@@ -156,7 +184,7 @@ func templatesTools() []tool {
 			RequiredScopes: []string{"templates:read", "campaigns:read"},
 			Annotations:    annRead(),
 		}, "Returns one campaign template with its content. Use it to read or edit the design. A campaign can be "+
-			"made from it only once it has HTML. "+simpleDesignNote,
+			"made from it only once it has HTML. "+ahamlReadNote,
 			getCampaignTemplate),
 		newTool(ToolInfo{
 			Name:           "create_campaign_template",
@@ -164,10 +192,11 @@ func templatesTools() []tool {
 			Toolset:        ToolsetTemplates,
 			RequiredScopes: []string{"templates:write", "campaigns:read"},
 			Annotations:    annWrite(),
-		}, "Creates a campaign template, a reusable design for campaigns, from HTML or MJML with an optional "+
-			"plain text version. Use it for a design several campaigns share; a campaign copies the design when "+
-			"it is made, and later changes to the template do not reach it. It has no draft and no subject or "+
-			"sender; the campaign owns those. The result is the campaign template, without its content.",
+		}, "Creates a campaign template, a reusable design for campaigns, from AhaML, HTML or MJML with an "+
+			"optional plain text version. Use it for a design several campaigns share; a campaign copies the "+
+			"design when it is made, and later changes to the template do not reach it. It has no draft and no "+
+			"subject or sender; the campaign owns those. The result is the campaign template, without its "+
+			"content. "+ahamlWriteNote,
 			createCampaignTemplate),
 		newTool(ToolInfo{
 			Name:           "update_campaign_template",
@@ -177,9 +206,9 @@ func templatesTools() []tool {
 			Annotations:    annWrite(),
 		}, "Changes a campaign template's name, content or both, at once. Use it to edit a shared campaign "+
 			"design. Only the fields given change. "+
-			"Campaigns already made from it keep their own copies. The editor cannot change: give mjml for an "+
-			"advanced design and html for an html design. "+simpleDesignNote+" The result is the campaign "+
-			"template, without its content.",
+			"Campaigns already made from it keep their own copies. The editor cannot change: give markup for a "+
+			"Simple Editor design, mjml for an advanced design and html for an html design. The result is the "+
+			"campaign template, without its content. "+ahamlUpdateNote,
 			updateCampaignTemplate),
 		newTool(ToolInfo{
 			Name:           "delete_campaign_template",
@@ -249,52 +278,89 @@ func templateVariablesFrom(vars []responses.TemplateVariable) []templateVariable
 	return out
 }
 
-// templateContent is the content of a template, draft, version or campaign.
+// templateContent is the content of a template, version or campaign.
 type templateContent struct {
-	MJML         string `json:"mjml,omitempty" jsonschema:"MJML source of an advanced design."`
-	HTML         string `json:"html,omitempty" jsonschema:"HTML of an html design, or the HTML made from a simple design. An advanced design returns mjml instead."`
-	Text         string `json:"text,omitempty" jsonschema:"Plain text version."`
-	TextIsCustom bool   `json:"text_is_custom" jsonschema:"True when the text was written rather than made from the HTML."`
+	MJML         string       `json:"mjml,omitempty" jsonschema:"MJML source of an advanced design."`
+	HTML         string       `json:"html,omitempty" jsonschema:"HTML of an html design, or the HTML made from a Simple Editor design, which a write changes through markup. An advanced design returns mjml instead."`
+	Markup       string       `json:"markup,omitempty" jsonschema:"AhaML of a Simple Editor design, which markup in a write takes back. The resource ahasend://docs/ahaml is its reference."`
+	MarkupError  *markupError `json:"markup_error,omitempty" jsonschema:"Why a Simple Editor design has no markup; missing when markup is there."`
+	Text         string       `json:"text,omitempty" jsonschema:"Plain text version."`
+	TextIsCustom bool         `json:"text_is_custom" jsonschema:"True when the text was written rather than made from the HTML."`
 }
 
 func templateContentFrom(c *responses.TemplateContent) *templateContent {
 	if c == nil {
 		return nil
 	}
-	return &templateContent{MJML: c.MJML, HTML: c.HTML, Text: c.Text, TextIsCustom: c.TextIsCustom}
+	out := &templateContent{MJML: c.MJML, HTML: c.HTML, Markup: deref(c.Markup), Text: c.Text, TextIsCustom: c.TextIsCustom}
+	if c.MarkupError != nil {
+		out.MarkupError = &markupError{Code: c.MarkupError.Code, Message: c.MarkupError.Message}
+	}
+	return out
+}
+
+// markupError tells why a Simple Editor design has no AhaML.
+type markupError struct {
+	Code    string `json:"code" jsonschema:"no_design (the design has no blocks yet), html_block (it holds an HTML block, which AhaML cannot show; remove the block in the dashboard), unmapped_block (it holds a block AhaML has no tag for), bad_stored_value (it holds a value AhaML cannot write), renderer_unavailable or rate_limited (read it again later)."`
+	Message string `json:"message" jsonschema:"What went wrong."`
+}
+
+// markupWarning is a warning about the AhaML a write stored.
+type markupWarning struct {
+	Code    string `json:"code" jsonschema:"Warning code, such as jinja_in_text: text holds {{ }}, which stays text; a variable in text is a <Var> tag."`
+	Message string `json:"message" jsonschema:"What the warning is about."`
+	Line    int    `json:"line,omitempty" jsonschema:"Line of the markup where it starts, counted from 1."`
+	Column  int    `json:"column,omitempty" jsonschema:"Column where it starts, counted from 1 in characters."`
+	Path    string `json:"path,omitempty" jsonschema:"The element, such as Email > Section[2] > Paragraph[1]."`
+}
+
+func markupWarningsFrom(problems []common.MarkupProblem) []markupWarning {
+	if len(problems) == 0 {
+		return nil
+	}
+	out := make([]markupWarning, 0, len(problems))
+	for _, p := range problems {
+		out = append(out, markupWarning{Code: p.Code, Message: p.Message, Line: p.Line, Column: p.Column, Path: p.Path})
+	}
+	return out
 }
 
 // contentInput is the content of a template or campaign write.
 type contentInput struct {
-	MJML string `json:"mjml,omitempty" jsonschema:"MJML source, for an advanced design. Give mjml or html, not both. Images and stylesheets must use https URLs."`
-	HTML string `json:"html,omitempty" jsonschema:"HTML, for an html design. Give mjml or html, not both. Images and stylesheets must use https URLs."`
-	Text string `json:"text,omitempty" jsonschema:"Plain text version. When omitted, it is made from the HTML."`
+	MJML string `json:"mjml,omitempty" jsonschema:"MJML source, for an advanced design. Not with markup or html. Images and stylesheets must use https URLs."`
+	HTML string `json:"html,omitempty" jsonschema:"HTML, for an html design. Not with mjml; beside markup it is ignored. Images and stylesheets must use https URLs."`
+	// Markup is a pointer so that null is no markup and "" is sent, as the
+	// API takes them.
+	Markup *string `json:"markup,omitempty" jsonschema:"AhaML, for a Simple Editor design. Not with mjml; null is the same as no markup. Images must use https URLs. The resource ahasend://docs/ahaml is its reference."`
+	Text   string  `json:"text,omitempty" jsonschema:"Plain text version. When omitted, it is made from the HTML."`
 }
 
 func (c contentInput) request() *requests.TemplateContentInput {
-	if c.MJML == "" && c.HTML == "" && c.Text == "" {
+	if c.MJML == "" && c.HTML == "" && c.Markup == nil && c.Text == "" {
 		return nil
 	}
 	return &requests.TemplateContentInput{
-		MJML: optionalString(c.MJML),
-		HTML: optionalString(c.HTML),
-		Text: optionalString(c.Text),
+		MJML:   optionalString(c.MJML),
+		HTML:   optionalString(c.HTML),
+		Markup: c.Markup,
+		Text:   optionalString(c.Text),
 	}
 }
 
 // contentUpdateInput is the content of a template or campaign update.
 type contentUpdateInput struct {
-	MJML         string `json:"mjml,omitempty" jsonschema:"New MJML source, for an advanced design. Omit to keep the design."`
-	HTML         string `json:"html,omitempty" jsonschema:"New HTML, for an html design. Omit to keep the design."`
-	Text         string `json:"text,omitempty" jsonschema:"New plain text version. Omit to keep the text; beside new mjml or html, a text made from the old HTML is made again from the new one, and a written text is kept."`
-	TextFromHTML bool   `json:"text_from_html,omitempty" jsonschema:"True to replace the text with one made from the HTML. Not with text."`
+	MJML         string  `json:"mjml,omitempty" jsonschema:"New MJML source, for an advanced design. Omit to keep the design."`
+	HTML         string  `json:"html,omitempty" jsonschema:"New HTML, for an html design. Omit to keep the design; beside markup it is ignored."`
+	Markup       *string `json:"markup,omitempty" jsonschema:"New AhaML, for a Simple Editor design; it replaces the whole design. Omit it, or give null, to keep the design. The resource ahasend://docs/ahaml is its reference."`
+	Text         string  `json:"text,omitempty" jsonschema:"New plain text version. Omit to keep the text; beside new markup, mjml or html, a text made from the old HTML is made again from the new one, and a written text is kept."`
+	TextFromHTML bool    `json:"text_from_html,omitempty" jsonschema:"True to replace the text with one made from the HTML. Not with text."`
 }
 
 func (c contentUpdateInput) request() (*requests.TemplateContentInput, error) {
 	if c.TextFromHTML && c.Text != "" {
 		return nil, invalidInput("Give text or text_from_html, not both.")
 	}
-	in := contentInput{MJML: c.MJML, HTML: c.HTML, Text: c.Text}.request()
+	in := contentInput{MJML: c.MJML, HTML: c.HTML, Markup: c.Markup, Text: c.Text}.request()
 	if c.TextFromHTML {
 		if in == nil {
 			in = &requests.TemplateContentInput{}
@@ -344,14 +410,14 @@ func replyToAddress(email string) *common.SenderAddress {
 type templateSummary struct {
 	ID        string        `json:"id" jsonschema:"Template ID."`
 	Name      string        `json:"name" jsonschema:"Template name."`
-	Editor    string        `json:"editor" jsonschema:"advanced (MJML), html, or simple (the dashboard's visual editor, read-only here)."`
-	Subject   string        `json:"subject,omitempty" jsonschema:"Published subject."`
-	Preheader string        `json:"preheader,omitempty" jsonschema:"Published preview text."`
+	Editor    string        `json:"editor" jsonschema:"advanced (MJML), html, or simple (the Simple Editor, written here as AhaML in markup)."`
+	Subject   string        `json:"subject,omitempty" jsonschema:"Subject of this copy."`
+	Preheader string        `json:"preheader,omitempty" jsonschema:"Preview text of this copy."`
 	From      *senderOutput `json:"from,omitempty" jsonschema:"Default sender; missing when every send must name one."`
 	ReplyTo   string        `json:"reply_to,omitempty" jsonschema:"Default reply-to address."`
 	HasDraft  bool          `json:"has_draft" jsonschema:"True when changes exist that are not published yet."`
 	CreatedAt time.Time     `json:"created_at" jsonschema:"When the template was created."`
-	UpdatedAt time.Time     `json:"updated_at" jsonschema:"When the published copy or the name last changed; draft edits do not change it."`
+	UpdatedAt time.Time     `json:"updated_at" jsonschema:"When this copy or the name last changed."`
 }
 
 func templateSummaryFrom(t *responses.Template) templateSummary {
@@ -369,21 +435,26 @@ func templateSummaryFrom(t *responses.Template) templateSummary {
 	}
 }
 
-// templateResult is a template as a write returns it: with its variables, but
-// without its content.
+// templateResult is a template as a write returns it, its working copy: with
+// its variables, but without its content.
 type templateResult struct {
 	templateSummary
-	Variables []templateVariable `json:"variables" jsonschema:"Variables of the published copy."`
+	Variables      []templateVariable `json:"variables" jsonschema:"Variables this copy's design uses."`
+	MarkupWarnings []markupWarning    `json:"markup_warnings,omitempty" jsonschema:"Warnings about the markup this write stored; only a write with markup has them."`
 }
 
 func templateResultFrom(t *responses.Template) templateResult {
-	return templateResult{templateSummary: templateSummaryFrom(t), Variables: templateVariablesFrom(t.Variables)}
+	return templateResult{
+		templateSummary: templateSummaryFrom(t),
+		Variables:       templateVariablesFrom(t.Variables),
+		MarkupWarnings:  markupWarningsFrom(t.MarkupWarnings),
+	}
 }
 
-// templateDetail is a template with its published content.
+// templateDetail is a template copy with its content.
 type templateDetail struct {
 	templateResult
-	Content *templateContent `json:"content,omitempty" jsonschema:"Published content; missing when the published copy has no body."`
+	Content *templateContent `json:"content,omitempty" jsonschema:"Content of this copy; missing when it has no body."`
 }
 
 type listTemplatesOutput struct {
@@ -426,9 +497,21 @@ func getTemplate(ctx context.Context, env *toolEnv, in templateIDInput) (templat
 	return templateDetail{templateResult: templateResultFrom(t), Content: templateContentFrom(t.Content)}, nil
 }
 
+func getPublishedTemplate(ctx context.Context, env *toolEnv, in templateIDInput) (templateDetail, error) {
+	id, err := parseID("template_id", in.TemplateID)
+	if err != nil {
+		return templateDetail{}, err
+	}
+	t, _, err := env.client.TemplatesAPI.GetPublishedTemplate(ctx, env.accountID, id)
+	if err != nil {
+		return templateDetail{}, err
+	}
+	return templateDetail{templateResult: templateResultFrom(t), Content: templateContentFrom(t.Content)}, nil
+}
+
 type createTemplateInput struct {
 	Name      string        `json:"name" jsonschema:"Template name."`
-	Editor    string        `json:"editor,omitempty" jsonschema:"advanced, html or simple. Optional with mjml (advanced) or html (html); simple makes an empty visual design to finish in the dashboard."`
+	Editor    string        `json:"editor,omitempty" jsonschema:"advanced, html or simple. Optional with markup (simple), mjml (advanced) or html (html); simple alone makes an empty Simple Editor design."`
 	Subject   string        `json:"subject,omitempty" jsonschema:"Subject."`
 	Preheader string        `json:"preheader,omitempty" jsonschema:"Preview text."`
 	From      *addressInput `json:"from,omitempty" jsonschema:"Default sender, on a domain of this account with valid DNS records. Omit to make every send name one."`
@@ -501,39 +584,6 @@ func deleteTemplate(ctx context.Context, env *toolEnv, in templateIDInput) (conf
 		return confirmationOutput{}, err
 	}
 	return confirmationOutput{Message: resp.Message}, nil
-}
-
-// templateDraftOutput is a template's unpublished draft.
-type templateDraftOutput struct {
-	TemplateID string             `json:"template_id" jsonschema:"Template ID."`
-	UpdatedAt  time.Time          `json:"updated_at" jsonschema:"When the draft last changed."`
-	Subject    string             `json:"subject,omitempty" jsonschema:"Draft subject."`
-	Preheader  string             `json:"preheader,omitempty" jsonschema:"Draft preview text."`
-	From       *senderOutput      `json:"from,omitempty" jsonschema:"Draft default sender."`
-	ReplyTo    string             `json:"reply_to,omitempty" jsonschema:"Draft default reply-to address."`
-	Variables  []templateVariable `json:"variables" jsonschema:"Variables the draft uses."`
-	Content    *templateContent   `json:"content,omitempty" jsonschema:"Draft content; missing when the draft has no body."`
-}
-
-func getTemplateDraft(ctx context.Context, env *toolEnv, in templateIDInput) (templateDraftOutput, error) {
-	id, err := parseID("template_id", in.TemplateID)
-	if err != nil {
-		return templateDraftOutput{}, err
-	}
-	d, _, err := env.client.TemplatesAPI.GetTemplateDraft(ctx, env.accountID, id)
-	if err != nil {
-		return templateDraftOutput{}, err
-	}
-	return templateDraftOutput{
-		TemplateID: d.TemplateID.String(),
-		UpdatedAt:  d.UpdatedAt,
-		Subject:    d.Subject,
-		Preheader:  d.Preheader,
-		From:       senderFrom(d.From),
-		ReplyTo:    replyToFrom(d.ReplyTo),
-		Variables:  templateVariablesFrom(d.Variables),
-		Content:    templateContentFrom(d.Content),
-	}, nil
 }
 
 func discardTemplateDraft(ctx context.Context, env *toolEnv, in templateIDInput) (templateResult, error) {
@@ -679,7 +729,7 @@ func restoreTemplateVersion(ctx context.Context, env *toolEnv, in restoreTemplat
 type campaignTemplateSummary struct {
 	ID        string    `json:"id" jsonschema:"Campaign template ID, for create_campaign's template_id."`
 	Name      string    `json:"name" jsonschema:"Campaign template name."`
-	Editor    string    `json:"editor" jsonschema:"advanced (MJML), html, or simple (the dashboard's visual editor, read-only here)."`
+	Editor    string    `json:"editor" jsonschema:"advanced (MJML), html, or simple (the Simple Editor, written here as AhaML in markup)."`
 	CreatedAt time.Time `json:"created_at" jsonschema:"When it was created."`
 	UpdatedAt time.Time `json:"updated_at" jsonschema:"When it last changed."`
 }
@@ -691,6 +741,20 @@ func campaignTemplateSummaryFrom(t *responses.CampaignTemplate) campaignTemplate
 		Editor:    t.Editor,
 		CreatedAt: t.CreatedAt,
 		UpdatedAt: t.UpdatedAt,
+	}
+}
+
+// campaignTemplateResult is a campaign template as a write returns it:
+// without its content, with the warnings about the markup it stored.
+type campaignTemplateResult struct {
+	campaignTemplateSummary
+	MarkupWarnings []markupWarning `json:"markup_warnings,omitempty" jsonschema:"Warnings about the markup this write stored; only a write with markup has them."`
+}
+
+func campaignTemplateResultFrom(t *responses.CampaignTemplate) campaignTemplateResult {
+	return campaignTemplateResult{
+		campaignTemplateSummary: campaignTemplateSummaryFrom(t),
+		MarkupWarnings:          markupWarningsFrom(t.MarkupWarnings),
 	}
 }
 
@@ -740,20 +804,20 @@ func getCampaignTemplate(ctx context.Context, env *toolEnv, in campaignTemplateI
 
 type createCampaignTemplateInput struct {
 	Name   string `json:"name" jsonschema:"Campaign template name."`
-	Editor string `json:"editor,omitempty" jsonschema:"advanced, html or simple. Optional with mjml (advanced) or html (html); without content the template gets an empty design of this editor."`
+	Editor string `json:"editor,omitempty" jsonschema:"advanced, html or simple. Optional with markup (simple), mjml (advanced) or html (html); without content the template gets an empty design of this editor."`
 	contentInput
 }
 
-func createCampaignTemplate(ctx context.Context, env *toolEnv, in createCampaignTemplateInput) (campaignTemplateSummary, error) {
+func createCampaignTemplate(ctx context.Context, env *toolEnv, in createCampaignTemplateInput) (campaignTemplateResult, error) {
 	t, _, err := env.client.CampaignTemplatesAPI.CreateCampaignTemplate(ctx, env.accountID, requests.CreateCampaignTemplateRequest{
 		Name:    in.Name,
 		Editor:  optionalString(in.Editor),
 		Content: in.request(),
 	})
 	if err != nil {
-		return campaignTemplateSummary{}, err
+		return campaignTemplateResult{}, err
 	}
-	return campaignTemplateSummaryFrom(t), nil
+	return campaignTemplateResultFrom(t), nil
 }
 
 type updateCampaignTemplateInput struct {
@@ -762,23 +826,23 @@ type updateCampaignTemplateInput struct {
 	contentUpdateInput
 }
 
-func updateCampaignTemplate(ctx context.Context, env *toolEnv, in updateCampaignTemplateInput) (campaignTemplateSummary, error) {
+func updateCampaignTemplate(ctx context.Context, env *toolEnv, in updateCampaignTemplateInput) (campaignTemplateResult, error) {
 	id, err := parseID("campaign_template_id", in.CampaignTemplateID)
 	if err != nil {
-		return campaignTemplateSummary{}, err
+		return campaignTemplateResult{}, err
 	}
 	content, err := in.request()
 	if err != nil {
-		return campaignTemplateSummary{}, err
+		return campaignTemplateResult{}, err
 	}
 	t, _, err := env.client.CampaignTemplatesAPI.UpdateCampaignTemplate(ctx, env.accountID, id, requests.UpdateCampaignTemplateRequest{
 		Name:    optionalString(in.Name),
 		Content: content,
 	})
 	if err != nil {
-		return campaignTemplateSummary{}, err
+		return campaignTemplateResult{}, err
 	}
-	return campaignTemplateSummaryFrom(t), nil
+	return campaignTemplateResultFrom(t), nil
 }
 
 func deleteCampaignTemplate(ctx context.Context, env *toolEnv, in campaignTemplateIDInput) (confirmationOutput, error) {
