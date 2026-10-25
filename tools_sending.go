@@ -45,8 +45,10 @@ func sendingTools() []tool {
 			RequiredScopes: []string{"messages:send"},
 			Annotations:    annWriteOpenWorld(),
 		}, "Sends a stored transactional template to each recipient in recipients; every recipient gets a "+
-			"separate message. Use it instead of send_email when the content is a template in this account. Each recipient's substitutions fill the template's variables. Without from or "+
-			"subject, the template's default sender and subject are used. Set sandbox to true to test without "+
+			"separate message. Use it instead of send_email when the content is a template in this account. "+
+			"Each recipient's substitutions fill the template's variables: get_template lists them, and each "+
+			"one's kind tells what to send, with a list taking an array of objects with its item_fields as keys. "+
+			"Without from or subject, the template's default sender and subject are used. Set sandbox to true to test without "+
 			"delivering. The result lists one entry per recipient with the new message ID and its status, or "+
 			"an error for that recipient.",
 			sendTemplateEmail),
@@ -101,7 +103,7 @@ func senders(in []addressInput) []common.SenderAddress {
 type recipientInput struct {
 	Email         string         `json:"email" jsonschema:"Recipient email address."`
 	Name          string         `json:"name,omitempty" jsonschema:"Recipient display name."`
-	Substitutions map[string]any `json:"substitutions,omitempty" jsonschema:"This recipient's values for the variables in the subject and content."`
+	Substitutions map[string]any `json:"substitutions,omitempty" jsonschema:"This recipient's values for the variables in the subject and content. For a template, each variable's kind tells what to send, and a list takes an array of objects with its item_fields as keys."`
 }
 
 func recipients(in []recipientInput) []common.Recipient {

@@ -1,6 +1,7 @@
 package ahasendmcp
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -226,4 +227,73 @@ func TestCampaignTemplateToolsNeedCampaignsRead(t *testing.T) {
 	for _, name := range []string{"list_campaign_templates", "get_campaign_template", "create_campaign_template", "update_campaign_template", "delete_campaign_template"} {
 		assert.Contains(t, names, name)
 	}
+}
+
+func TestTemplateVariablesShowTheirKind(t *testing.T) {
+	body := templateJSON()
+	body["variables"] = []map[string]any{
+		{"name": "first_name", "required": true, "kind": "value"},
+		{"name": "vip", "required": false, "kind": "condition"},
+		{"name": "items", "required": true, "kind": "list", "item_fields": []string{"name", "price"}},
+		{"name": "tags", "required": false, "kind": "list", "item_fields": []string{"value"}},
+		{"name": "rows", "required": false, "kind": "list"},
+		{"name": "legacy", "required": false},
+		{"name": "future", "required": false, "kind": "matrix", "item_fields": []string{"x"}},
+	}
+	f := newFakeAPI(t)
+	f.handle("GET "+apiPath("/templates/"+testTemplateID), http.StatusOK, body)
+	cs := connect(t, testOptions(t, f))
+
+	out := decode[map[string]any](t, callTool(t, cs, "get_template", map[string]any{"template_id": testTemplateID}))
+
+	vars := map[string]map[string]any{}
+	for _, v := range field(t, out, "variables").([]any) {
+		m := v.(map[string]any)
+		vars[m["name"].(string)] = m
+	}
+	tests := []struct {
+		name           string
+		wantKind       string
+		wantItemFields any
+	}{
+		{"first_name", "value", nil},
+		{"vip", "condition", nil},
+		{"items", "list", []any{"name", "price"}},
+		{"tags", "list", []any{"value"}},
+		{"rows", "list", []any{}},
+		{"legacy", "value", nil},
+		{"future", "matrix", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := vars[tt.name]
+			require.NotNil(t, v)
+			assert.Equal(t, tt.wantKind, v["kind"])
+			if tt.wantItemFields == nil {
+				assert.NotContains(t, v, "item_fields")
+			} else {
+				assert.Equal(t, tt.wantItemFields, v["item_fields"])
+			}
+		})
+	}
+}
+
+func TestTemplateToolsSayWhatEachVariableKindTakes(t *testing.T) {
+	cs := connect(t, testOptions(t, newFakeAPI(t)))
+	res, err := cs.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	descriptions := map[string]string{}
+	var sendSchema []byte
+	for _, tl := range res.Tools {
+		descriptions[tl.Name] = tl.Description
+		if tl.Name == "send_template_email" {
+			sendSchema, err = json.Marshal(tl.InputSchema)
+			require.NoError(t, err)
+		}
+	}
+	for _, name := range []string{"get_template", "get_template_draft", "get_template_version", "send_template_email"} {
+		assert.Contains(t, descriptions[name], "kind", name)
+		assert.Contains(t, descriptions[name], "item_fields", name)
+	}
+	assert.Contains(t, string(sendSchema), "each variable's kind tells what to send", "the substitutions description")
 }
