@@ -59,7 +59,7 @@ func TestManagementTools(t *testing.T) {
 				"on_reception": false, "on_delivered": true, "on_transient_error": false, "on_failed": false,
 				"on_bounced": true, "on_suppressed": false, "on_opened": false, "on_clicked": false,
 				"on_suppression_created": false, "on_dns_error": false,
-				// ahasend-go sends every event setting; this server does not offer the newer ones yet.
+				// ahasend-go sends every event setting, so the ones not given go as false.
 				"on_unsubscribed": false, "on_complained": false, "on_suppression_deleted": false,
 				"on_contact_created": false, "on_contact_updated": false, "on_contact_deleted": false,
 				"on_contact_added_to_list": false, "on_contact_removed_from_list": false,
@@ -290,4 +290,132 @@ func TestRemoveSuppressionRefusesAnEmptyEmail(t *testing.T) {
 	assert.Contains(t, text, "email")
 	assert.Empty(t, f.calls())
 	assert.Equal(t, ErrorKindInvalidInput, rec.only(t).ErrorKind)
+}
+
+func TestCreateWebhookSendsTheContactEventsAndOrigins(t *testing.T) {
+	f := newFakeAPI(t)
+	f.handle("POST "+apiPath("/webhooks"), http.StatusCreated, webhookJSON("s"))
+	cs := connect(t, testOptions(t, f))
+
+	decode[map[string]any](t, callTool(t, cs, "create_webhook", map[string]any{
+		"name": "CRM sync", "url": "https://app.example.com/hooks",
+		"on_contact_created": true, "on_contact_unsubscribed": true, "on_unsubscribed": true,
+		"on_complained": true, "on_suppression_deleted": true,
+		"origins": []string{"recipient", "dashboard"},
+	}))
+	body := f.onlyCall(t).Body
+	for _, setting := range []string{"on_contact_created", "on_contact_unsubscribed", "on_unsubscribed", "on_complained", "on_suppression_deleted"} {
+		assert.Equal(t, true, body[setting], setting)
+	}
+	assert.Equal(t, false, body["on_contact_updated"])
+	assert.Equal(t, []any{"recipient", "dashboard"}, body["origins"])
+}
+
+func TestCreateWebhookWithoutOriginsSendsNone(t *testing.T) {
+	f := newFakeAPI(t)
+	f.handle("POST "+apiPath("/webhooks"), http.StatusCreated, webhookJSON("s"))
+	cs := connect(t, testOptions(t, f))
+
+	decode[map[string]any](t, callTool(t, cs, "create_webhook", map[string]any{"name": "Hooks", "url": "https://app.example.com/hooks"}))
+	assert.NotContains(t, f.onlyCall(t).Body, "origins")
+}
+
+func TestUpdateWebhookChangesOnlyTheGivenEventsAndOrigins(t *testing.T) {
+	f := newFakeAPI(t)
+	f.handle("PUT "+apiPath("/webhooks/"+testWebhookID), http.StatusOK, webhookJSON(""))
+	cs := connect(t, testOptions(t, f))
+
+	decode[map[string]any](t, callTool(t, cs, "update_webhook", map[string]any{
+		"webhook_id": testWebhookID, "on_contact_deleted": true, "on_complained": false,
+		"origins": []string{"recipient", "api", "dashboard", "system"},
+	}))
+	assert.Equal(t, map[string]any{
+		"on_contact_deleted": true, "on_complained": false,
+		"origins": []any{"recipient", "api", "dashboard", "system"},
+	}, f.onlyCall(t).Body)
+}
+
+func TestWebhookToolsRefuseAnEmptyOrUnknownOrigin(t *testing.T) {
+	f := newFakeAPI(t)
+	cs := connect(t, testOptions(t, f))
+
+	for _, call := range []struct {
+		tool string
+		args map[string]any
+		want string
+	}{
+		{"create_webhook", map[string]any{"name": "Hooks", "url": "https://app.example.com/hooks", "origins": []string{}}, "leave it out for every origin"},
+		{"create_webhook", map[string]any{"name": "Hooks", "url": "https://app.example.com/hooks", "origins": []string{"partner"}}, `Unknown origin "partner"`},
+		{"update_webhook", map[string]any{"webhook_id": testWebhookID, "origins": []string{}}, "give all four for every origin, or leave it out to keep the current ones"},
+		{"update_webhook", map[string]any{"webhook_id": testWebhookID, "origins": []string{"api", "API"}}, `Unknown origin "API"`},
+	} {
+		assert.Contains(t, requireToolError(t, callTool(t, cs, call.tool, call.args)), call.want, call.tool)
+	}
+	assert.Empty(t, f.calls())
+}
+
+// newWebhookSettings are the event settings that came with the contact,
+// unsubscribe, complaint and suppression.deleted events.
+var newWebhookSettings = []string{
+	"on_unsubscribed", "on_complained", "on_suppression_deleted",
+	"on_contact_created", "on_contact_updated", "on_contact_deleted",
+	"on_contact_added_to_list", "on_contact_removed_from_list",
+	"on_contact_subscribed", "on_contact_unsubscribed", "on_contact_complained",
+}
+
+func TestEachNewWebhookSettingReachesItsOwnField(t *testing.T) {
+	for _, setting := range newWebhookSettings {
+		t.Run(setting, func(t *testing.T) {
+			w := webhookJSON("")
+			w[setting] = true
+			f := newFakeAPI(t)
+			f.handle("POST "+apiPath("/webhooks"), http.StatusCreated, w)
+			f.handle("PUT "+apiPath("/webhooks/"+testWebhookID), http.StatusOK, w)
+			cs := connect(t, testOptions(t, f))
+
+			created := decode[map[string]any](t, callTool(t, cs, "create_webhook", map[string]any{
+				"name": "Hooks", "url": "https://app.example.com/hooks", setting: true,
+			}))
+			updated := decode[map[string]any](t, callTool(t, cs, "update_webhook", map[string]any{
+				"webhook_id": testWebhookID, setting: true,
+			}))
+			calls := f.calls()
+			require.Len(t, calls, 2)
+			for _, other := range newWebhookSettings {
+				want := other == setting
+				assert.Equal(t, want, calls[0].Body[other], "create body %s", other)
+				assert.Equal(t, want, created[other], "create output %s", other)
+				assert.Equal(t, want, updated[other], "update output %s", other)
+			}
+			assert.Equal(t, map[string]any{setting: true}, calls[1].Body)
+		})
+	}
+}
+
+func TestWebhookOutputShowsTheNewEventsAndOrigins(t *testing.T) {
+	scoped := webhookJSON("")
+	scoped["on_contact_created"] = true
+	scoped["on_suppression_deleted"] = true
+	scoped["origins"] = []string{"recipient"}
+	everyOrigin := webhookJSON("")
+	everyOrigin["origins"] = nil
+
+	for name, w := range map[string]map[string]any{"scoped": scoped, "every origin": everyOrigin} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeAPI(t)
+			f.handle("GET "+apiPath("/webhooks/"+testWebhookID), http.StatusOK, w)
+			cs := connect(t, testOptions(t, f))
+
+			out := decode[map[string]any](t, callTool(t, cs, "get_webhook", map[string]any{"webhook_id": testWebhookID}))
+			assert.Equal(t, w["on_contact_created"] == true, out["on_contact_created"])
+			assert.Equal(t, w["on_suppression_deleted"] == true, out["on_suppression_deleted"])
+			assert.Equal(t, false, out["on_unsubscribed"])
+			require.Contains(t, out, "origins")
+			if w["origins"] == nil {
+				assert.Nil(t, out["origins"])
+			} else {
+				assert.Equal(t, []any{"recipient"}, out["origins"])
+			}
+		})
+	}
 }
