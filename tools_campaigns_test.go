@@ -168,3 +168,104 @@ func TestSendCampaignTestAndUnscheduleNeedNoConfirmation(t *testing.T) {
 	assert.Equal(t, apiPath("/campaigns/"+testCampaignID+"/test"), calls[0].Path)
 	assert.Equal(t, apiPath("/campaigns/"+testCampaignID+"/unschedule"), calls[1].Path)
 }
+
+func TestCampaignAudienceTools(t *testing.T) {
+	campaign := "/campaigns/" + testCampaignID
+	segmentCampaign := func() map[string]any {
+		c := campaignJSON()
+		c["list_ids"] = []string{}
+		c["segment_ids"] = []string{testSegmentID}
+		c["exclude_list_ids"] = []string{testList2ID}
+		c["exclude_segment_ids"] = []string{testSegment2ID}
+		return c
+	}
+
+	runToolCases(t, []toolCase{
+		{
+			tool: "create_campaign",
+			args: map[string]any{
+				"name": "October news", "segment_ids": []string{testSegmentID},
+				"exclude_list_ids": []string{testList2ID}, "exclude_segment_ids": []string{testSegment2ID},
+			},
+			method: http.MethodPost, path: "/campaigns", status: http.StatusCreated, resp: segmentCampaign(),
+			wantBody: map[string]any{
+				"name": "October news", "segment_ids": []any{testSegmentID},
+				"exclude_list_ids": []any{testList2ID}, "exclude_segment_ids": []any{testSegment2ID},
+			},
+			check: func(t *testing.T, out map[string]any) {
+				assert.Equal(t, []any{}, out["list_ids"])
+				assert.Equal(t, []any{testSegmentID}, out["segment_ids"])
+				assert.Equal(t, []any{testList2ID}, out["exclude_list_ids"])
+				assert.Equal(t, []any{testSegment2ID}, out["exclude_segment_ids"])
+			},
+		},
+		{
+			tool: "update_campaign",
+			args: map[string]any{
+				"campaign_id": testCampaignID, "list_ids": []string{}, "segment_ids": []string{testSegmentID},
+				"exclude_segment_ids": []string{},
+			},
+			method: http.MethodPut, path: campaign, resp: segmentCampaign(),
+			wantBody: map[string]any{"list_ids": []any{}, "segment_ids": []any{testSegmentID}, "exclude_segment_ids": []any{}},
+		},
+		{
+			tool: "get_campaign", args: map[string]any{"campaign_id": testCampaignID},
+			method: http.MethodGet, path: campaign, resp: campaignJSON(),
+			check: func(t *testing.T, out map[string]any) {
+				assert.Equal(t, []any{}, out["segment_ids"], "a campaign without segments shows an empty set")
+			},
+		},
+		{
+			tool:   "list_campaign_recipients",
+			args:   map[string]any{"campaign_id": testCampaignID, "status": "Delivered"},
+			method: http.MethodGet, path: campaign + "/recipients",
+			resp: page(map[string]any{
+				"object": "campaign_recipient", "contact_id": testContactID, "email": "ann@example.org",
+				"list_name": nil, "segment_id": testSegmentID, "segment_name": "Engaged", "status": "Delivered",
+				"attempts": 1, "created_at": fixtureTime, "updated_at": fixtureTime,
+			}),
+			check: func(t *testing.T, out map[string]any) {
+				assert.Equal(t, testSegmentID, field(t, out, "recipients.0.segment_id"))
+				assert.Equal(t, "Engaged", field(t, out, "recipients.0.segment_name"))
+				assert.Nil(t, field(t, out, "recipients.0.list_name"))
+			},
+		},
+	})
+}
+
+func TestCampaignWritesRefusedWhileASegmentIsRebuilt(t *testing.T) {
+	const rebuilding = "The campaign's audience is being updated. Try again in a minute."
+	f := newFakeAPI(t)
+	f.handle("POST "+apiPath("/campaigns"), http.StatusConflict, map[string]any{"message": rebuilding})
+	f.handle("PUT "+apiPath("/campaigns/"+testCampaignID), http.StatusConflict, map[string]any{"message": rebuilding})
+	rec := &fakeRecorder{}
+	opts := testOptions(t, f)
+	opts.Recorder = rec
+	cs := connect(t, opts)
+
+	for _, call := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"create_campaign", map[string]any{"name": "News", "segment_ids": []string{testSegmentID}}},
+		{"update_campaign", map[string]any{"campaign_id": testCampaignID, "segment_ids": []string{testSegmentID}}},
+	} {
+		text := requireToolError(t, callTool(t, cs, call.tool, call.args))
+		assert.Equal(t, "AhaSend refused the request (HTTP 409): "+rebuilding, text, call.tool)
+	}
+	for _, c := range rec.all() {
+		assert.Equal(t, ErrorKindAPI4xx, c.ErrorKind)
+	}
+}
+
+func TestCampaignWritesRefuseAMalformedAudienceID(t *testing.T) {
+	f := newFakeAPI(t)
+	cs := connect(t, testOptions(t, f))
+
+	text := requireToolError(t, callTool(t, cs, "update_campaign", map[string]any{
+		"campaign_id": testCampaignID, "exclude_segment_ids": []string{"not-an-id"},
+	}))
+
+	assert.Contains(t, text, "exclude_segment_ids must be an ID")
+	assert.Empty(t, f.calls())
+}
