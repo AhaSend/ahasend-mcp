@@ -54,7 +54,7 @@ func templatesTools() []tool {
 			Annotations:    annRead(),
 		}, "Lists the transactional templates of this account, newest first, with their name, editor, "+
 			"subject, sender and whether they have unpublished changes, but not their content. Use it to find a "+
-			"template for send_template_email or to edit; get_template returns one template with its content. "+
+			"template for send_template_email or to edit; get_published_template returns the copy a send uses, and get_template the one to edit. "+
 			"The result holds one page and a next_cursor for the page after it.",
 			listTemplates),
 		newTool(ToolInfo{

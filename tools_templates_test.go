@@ -297,3 +297,17 @@ func TestTemplateToolsSayWhatEachVariableKindTakes(t *testing.T) {
 	}
 	assert.Contains(t, string(sendSchema), "each variable's kind tells what to send", "the substitutions description")
 }
+
+func TestSendTemplateEmailReadsTheVariablesOfThePublishedCopy(t *testing.T) {
+	cs := connect(t, testOptions(t, newFakeAPI(t)))
+	res, err := cs.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	for _, tl := range res.Tools {
+		if tl.Name == "send_template_email" {
+			assert.Contains(t, tl.Description, "get_published_template lists them")
+			assert.NotContains(t, tl.Description, "get_template lists them")
+			return
+		}
+	}
+	t.Fatal("send_template_email is not listed")
+}
