@@ -33,7 +33,7 @@ func campaignsTools() []tool {
 			Annotations:    annRead(),
 		}, "Returns one campaign with its lists, content and status. For a draft, ready tells whether it can "+
 			"be sent and issues lists what to fix first, such as a missing subject, sender, list or unsubscribe "+
-			"link. Use it to check a campaign before sending it.",
+			"link. Use it to check a campaign before sending it. "+ahamlReadNote,
 			getCampaign),
 		newTool(ToolInfo{
 			Name:           "create_campaign",
@@ -42,11 +42,12 @@ func campaignsTools() []tool {
 			RequiredScopes: []string{"campaigns:write"},
 			Annotations:    annWrite(),
 		}, "Creates a draft marketing campaign. Only name is required; the rest can be set later with "+
-			"update_campaign. The design comes from mjml or html (with optional text), from editor alone (an "+
-			"empty design), or from a campaign template named by template_id, which the campaign copies. The "+
-			"HTML must link to {{ unsubscribe_url }} or {{ unsubscribe_link }} before the campaign can be sent. "+
+			"update_campaign. The design comes from markup, mjml or html (with optional text), from editor alone "+
+			"(an empty design), or from a campaign template named by template_id, which the campaign copies. The "+
+			"HTML must link to {{ unsubscribe_url }} or {{ unsubscribe_link }} before the campaign can be sent; "+
+			`in AhaML, write <Link href="{{ unsubscribe_url }}">Unsubscribe</Link>. `+
 			"Nothing is sent. The result is the campaign, without its content, with ready and the issues left "+
-			"to fix.",
+			"to fix. "+ahamlWriteNote,
 			createCampaign),
 		newTool(ToolInfo{
 			Name:           "update_campaign",
@@ -55,9 +56,9 @@ func campaignsTools() []tool {
 			RequiredScopes: []string{"campaigns:write"},
 			Annotations:    annWrite(),
 		}, "Changes a draft campaign; a campaign that is not a draft cannot be changed. Only the fields given "+
-			"change, and list_ids replaces the lists. The design's editor cannot change: give mjml for an "+
-			"advanced design and html for an html design. "+simpleDesignNote+" The result is the campaign, "+
-			"without its content, with ready and the issues left to fix.",
+			"change, and list_ids replaces the lists. The design's editor cannot change: give markup for a "+
+			"Simple Editor design, mjml for an advanced design and html for an html design. The result is the "+
+			"campaign, without its content, with ready and the issues left to fix. "+ahamlUpdateNote,
 			updateCampaign),
 		newTool(ToolInfo{
 			Name:           "delete_campaign",
@@ -206,10 +207,11 @@ type campaignIssue struct {
 // issues, but without its content.
 type campaignResult struct {
 	campaignSummary
-	ListIDs []string        `json:"list_ids" jsonschema:"The lists the campaign sends to, in order."`
-	Editor  string          `json:"editor,omitempty" jsonschema:"The design's editor: advanced (MJML), html, or simple (read-only here). Missing while the campaign has no design."`
-	Ready   *bool           `json:"ready,omitempty" jsonschema:"For a draft: true when it has no issue and can be sent."`
-	Issues  []campaignIssue `json:"issues,omitempty" jsonschema:"For a draft: what keeps it from being sent."`
+	ListIDs        []string        `json:"list_ids" jsonschema:"The lists the campaign sends to, in order."`
+	Editor         string          `json:"editor,omitempty" jsonschema:"The design's editor: advanced (MJML), html, or simple (the Simple Editor, written here as AhaML in markup). Missing while the campaign has no design."`
+	Ready          *bool           `json:"ready,omitempty" jsonschema:"For a draft: true when it has no issue and can be sent."`
+	Issues         []campaignIssue `json:"issues,omitempty" jsonschema:"For a draft: what keeps it from being sent."`
+	MarkupWarnings []markupWarning `json:"markup_warnings,omitempty" jsonschema:"Warnings about the markup this write stored; only a write with markup has them."`
 }
 
 func campaignResultFrom(c *responses.Campaign) campaignResult {
@@ -218,6 +220,7 @@ func campaignResultFrom(c *responses.Campaign) campaignResult {
 		ListIDs:         make([]string, 0, len(c.ListIDs)),
 		Editor:          deref(c.Editor),
 		Ready:           c.Ready,
+		MarkupWarnings:  markupWarningsFrom(c.MarkupWarnings),
 	}
 	for _, id := range c.ListIDs {
 		out.ListIDs = append(out.ListIDs, id.String())
@@ -299,7 +302,7 @@ type createCampaignInput struct {
 	From      *addressInput `json:"from,omitempty" jsonschema:"Sender, on a domain of this account with valid DNS records."`
 	ReplyTo   string        `json:"reply_to,omitempty" jsonschema:"Reply-to address, without a display name."`
 	ListIDs   []string      `json:"list_ids,omitempty" jsonschema:"IDs of the lists to send to, 1 to 50, in order."`
-	Editor    string        `json:"editor,omitempty" jsonschema:"advanced, html or simple. Alone, it makes an empty design to finish in the dashboard; with mjml or html it must match them. Not with template_id."`
+	Editor    string        `json:"editor,omitempty" jsonschema:"advanced, html or simple. Alone, it makes an empty design; with content it must match it: simple for markup, advanced for mjml, html for html alone. Not with template_id."`
 	contentInput
 	TemplateID string `json:"template_id,omitempty" jsonschema:"ID of a campaign template whose design the campaign copies. Not with editor or content."`
 }
@@ -550,7 +553,7 @@ type listCampaignRecipientsInput struct {
 type campaignRecipient struct {
 	ContactID            string    `json:"contact_id" jsonschema:"Contact ID."`
 	Email                string    `json:"email" jsonschema:"Address the campaign sent to."`
-	ListName             string    `json:"list_name" jsonschema:"The list through which the contact got the campaign."`
+	ListName             string    `json:"list_name,omitempty" jsonschema:"The list through which the contact got the campaign; missing when it came through a segment."`
 	Status               string    `json:"status" jsonschema:"Status, as the report names it."`
 	BounceClassification string    `json:"bounce_classification,omitempty" jsonschema:"Bounce classification."`
 	BounceReason         string    `json:"bounce_reason,omitempty" jsonschema:"Bounce reason."`
@@ -590,7 +593,7 @@ func listCampaignRecipients(ctx context.Context, env *toolEnv, in listCampaignRe
 		out.Recipients = append(out.Recipients, campaignRecipient{
 			ContactID:            r.ContactID.String(),
 			Email:                r.Email,
-			ListName:             r.ListName,
+			ListName:             deref(r.ListName),
 			Status:               r.Status,
 			BounceClassification: deref(r.BounceClassification),
 			BounceReason:         deref(r.BounceReason),
