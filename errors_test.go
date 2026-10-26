@@ -185,8 +185,8 @@ func TestMarketingNoteOnlyForABareNotFound(t *testing.T) {
 
 			text := requireToolError(t, callTool(t, cs, "get_campaign", map[string]any{"campaign_id": testCampaignID}))
 			if tt.wantNote {
-				assert.Equal(t, "Not found in this AhaSend account. Contacts, lists, campaigns and campaign "+
-					"templates exist only on accounts with marketing turned on.", text)
+				assert.Equal(t, "Not found in this AhaSend account. Contacts, lists, segments, campaigns and "+
+					"campaign templates exist only on accounts with marketing turned on.", text)
 				return
 			}
 			assert.Equal(t, "Not found in this AhaSend account: campaign not found.", text)

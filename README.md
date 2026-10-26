@@ -68,13 +68,16 @@ picks scopes.
 | `diagnostics` | `list_messages`, `get_message`, `diagnose_message`, `get_deliverability_stats`, `get_bounce_stats`, `get_delivery_time_stats` |
 | `domains` | `list_domains`, `get_domain`, `add_domain`, `check_domain_dns`, `update_domain`, `delete_domain` |
 | `templates` | `list_templates`, `get_template`, `get_published_template`, `create_template`, `update_template`, `delete_template`, `discard_template_draft`, `publish_template`, `list_template_versions`, `get_template_version`, `restore_template_version`, `list_campaign_templates`, `get_campaign_template`, `create_campaign_template`, `update_campaign_template`, `delete_campaign_template` |
-| `audience` | `list_contacts`, `get_contact`, `create_contact`, `upsert_contacts`, `update_contact`, `delete_contact`, `list_contact_lists`, `list_lists`, `get_list`, `create_list`, `update_list`, `delete_list`, `list_list_contacts`, `add_contacts_to_list`, `upsert_list_contact`, `remove_contact_from_list` |
+| `audience` | `list_contacts`, `get_contact`, `create_contact`, `upsert_contacts`, `update_contact`, `delete_contact`, `list_contact_lists`, `list_lists`, `get_list`, `create_list`, `update_list`, `delete_list`, `list_list_contacts`, `add_contacts_to_list`, `upsert_list_contact`, `remove_contact_from_list`, `list_segments`, `get_segment`, `create_segment`, `update_segment`, `delete_segment`, `preview_segment`, `list_segment_contacts`, `list_contact_segments` |
 | `campaigns` | `list_campaigns`, `get_campaign`, `create_campaign`, `update_campaign`, `delete_campaign`, `duplicate_campaign`, `send_campaign_test`, `send_campaign`, `schedule_campaign`, `unschedule_campaign`, `get_campaign_stats`, `list_campaign_recipients` |
 | `management` | `get_account`, `list_webhooks`, `get_webhook`, `create_webhook`, `update_webhook`, `delete_webhook`, `list_routes`, `get_route`, `create_route`, `update_route`, `delete_route`, `list_suppressions`, `add_suppression`, `remove_suppression`, `list_smtp_credentials`, `get_smtp_credential`, `delete_smtp_credential`, `list_sub_accounts`, `get_sub_account`, `create_sub_account`, `update_sub_account`, `get_sub_account_usage` |
 
 Each tool needs the scopes its API endpoint needs. `send_campaign` and
-`schedule_campaign` also need `campaigns:read` and `lists:read`. The
-campaign template tools also need `campaigns:read`.
+`schedule_campaign` also need `campaigns:read` and `lists:read`, and
+`segments:read` to send a campaign that uses segments. The campaign
+template tools also need `campaigns:read`. `preview_segment`,
+`list_segment_contacts` and `list_contact_segments` need `contacts:read`
+as well as `segments:read`.
 
 List tools return 20 items by default and at most 100. Pass the returned
 cursor to get the next page.
@@ -100,10 +103,11 @@ connection, so an agent without web access can read it.
 
 **Campaign sends need a person's yes.** `send_campaign` and
 `schedule_campaign` show the user a form with the send time, the number of
-contacts, the campaign name, subject, sender and lists. They send only if
-the user answers yes. If the campaign changes after the question, the tool
-asks again. If the client cannot show a form, the tool sends nothing and
-returns a link to the campaign in the dashboard.
+contacts, the campaign name, subject, sender, lists and segments, and the
+excluded lists and segments. They send only if the user answers yes. If
+the campaign changes after the question, the tool asks again. If the client
+cannot show a form, the tool sends nothing and returns a link to the
+campaign in the dashboard.
 
 **One-off sends have a recipient limit.** A single send to more than
 `MaxRecipientsPerSend` recipients (default 50) is refused. Use a campaign

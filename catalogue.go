@@ -71,6 +71,7 @@ func allTools() []tool {
 	tools = append(tools, domainsTools()...)
 	tools = append(tools, templatesTools()...)
 	tools = append(tools, audienceTools()...)
+	tools = append(tools, segmentsTools()...)
 	tools = append(tools, campaignsTools()...)
 	tools = append(tools, managementTools()...)
 	return tools

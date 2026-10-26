@@ -194,15 +194,15 @@ func toolErrorFor(info ToolInfo, err error) error {
 	if message != "" && !strings.EqualFold(message, http.StatusText(http.StatusNotFound)) {
 		return te
 	}
-	return &toolError{kind: te.kind, message: te.message + " Contacts, lists, campaigns and campaign templates " +
-		"exist only on accounts with marketing turned on."}
+	return &toolError{kind: te.kind, message: te.message + " Contacts, lists, segments, campaigns and campaign " +
+		"templates exist only on accounts with marketing turned on."}
 }
 
-// isMarketingTool reports whether a tool works on contacts, lists, campaigns
-// or campaign templates.
+// isMarketingTool reports whether a tool works on contacts, lists, segments,
+// campaigns or campaign templates.
 func isMarketingTool(info ToolInfo) bool {
 	for _, scope := range info.RequiredScopes {
-		for _, prefix := range []string{"contacts:", "lists:", "campaigns:"} {
+		for _, prefix := range []string{"contacts:", "lists:", "segments:", "campaigns:"} {
 			if strings.HasPrefix(scope, prefix) {
 				return true
 			}

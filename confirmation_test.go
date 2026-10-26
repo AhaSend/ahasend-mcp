@@ -22,17 +22,22 @@ const (
 	protocol20250618 = "2025-06-18"
 )
 
-// campaignFake is a fake API holding one draft campaign on two lists, whose
-// fields a test can change between calls.
+// campaignFake is a fake API holding one draft campaign on two lists, with
+// two ready segments it can use, whose fields a test can change between
+// calls.
 type campaignFake struct {
 	*fakeAPI
 	mu       sync.Mutex
 	campaign map[string]any
+	segments map[string]map[string]any
 }
 
 func newCampaignFake(t *testing.T) *campaignFake {
 	t.Helper()
-	cf := &campaignFake{fakeAPI: newFakeAPI(t), campaign: campaignJSON()}
+	cf := &campaignFake{fakeAPI: newFakeAPI(t), campaign: campaignJSON(), segments: map[string]map[string]any{
+		testSegmentID:  segmentJSON(testSegmentID, "Engaged", "ready", 380),
+		testSegment2ID: segmentJSON(testSegment2ID, "Lapsed", "ready", 50),
+	}}
 	cf.handleFunc("GET "+apiPath("/campaigns/"+testCampaignID), func(*http.Request) (int, any) {
 		cf.mu.Lock()
 		defer cf.mu.Unlock()
@@ -40,6 +45,11 @@ func newCampaignFake(t *testing.T) *campaignFake {
 	})
 	cf.handle("GET "+apiPath("/lists/"+testListID), http.StatusOK, listJSON(testListID, "Newsletter", 1200))
 	cf.handle("GET "+apiPath("/lists/"+testList2ID), http.StatusOK, listJSON(testList2ID, "Customers", 345))
+	cf.handleFunc("GET "+apiPath("/segments/{id}"), func(r *http.Request) (int, any) {
+		cf.mu.Lock()
+		defer cf.mu.Unlock()
+		return http.StatusOK, cf.segments[r.PathValue("id")]
+	})
 	cf.handleFunc("POST "+apiPath("/campaigns/"+testCampaignID+"/send"), func(*http.Request) (int, any) {
 		cf.mu.Lock()
 		sent := maps.Clone(cf.campaign)
@@ -58,6 +68,13 @@ func (cf *campaignFake) set(key string, value any) {
 	next := maps.Clone(cf.campaign)
 	next[key] = value
 	cf.campaign = next
+}
+
+// setSegment replaces one segment.
+func (cf *campaignFake) setSegment(id string, segment map[string]any) {
+	cf.mu.Lock()
+	defer cf.mu.Unlock()
+	cf.segments[id] = segment
 }
 
 // sends returns the send requests the fake received.
@@ -277,6 +294,18 @@ func TestSendCampaignAsksAgainWithoutAValidAnswer(t *testing.T) {
 		}},
 		{"list_ids changed", func(t *testing.T, key []byte, s confirmState, cf *campaignFake) string {
 			cf.set("list_ids", []string{testListID})
+			return resign(func(*confirmState) {})(t, key, s, cf)
+		}},
+		{"segment_ids changed", func(t *testing.T, key []byte, s confirmState, cf *campaignFake) string {
+			cf.set("segment_ids", []string{testSegmentID})
+			return resign(func(*confirmState) {})(t, key, s, cf)
+		}},
+		{"exclude_list_ids changed", func(t *testing.T, key []byte, s confirmState, cf *campaignFake) string {
+			cf.set("exclude_list_ids", []string{testList2ID})
+			return resign(func(*confirmState) {})(t, key, s, cf)
+		}},
+		{"exclude_segment_ids changed", func(t *testing.T, key []byte, s confirmState, cf *campaignFake) string {
+			cf.set("exclude_segment_ids", []string{testSegment2ID})
 			return resign(func(*confirmState) {})(t, key, s, cf)
 		}},
 		{"content changed", func(t *testing.T, key []byte, s confirmState, cf *campaignFake) string {
@@ -658,4 +687,158 @@ func TestSendCampaignRefusesListsWithoutReachableContacts(t *testing.T) {
 		assert.NotEqual(t, http.MethodPost, c.Method, "nothing is sent")
 	}
 	assert.Equal(t, ErrorKindInvalidInput, rec.only(t).ErrorKind)
+}
+
+// setSegmentAudience gives the campaign one list and one segment, and
+// excludes the other list and segment.
+func (cf *campaignFake) setSegmentAudience() {
+	cf.set("list_ids", []string{testListID})
+	cf.set("segment_ids", []string{testSegmentID})
+	cf.set("exclude_list_ids", []string{testList2ID})
+	cf.set("exclude_segment_ids", []string{testSegment2ID})
+}
+
+func TestSendCampaignAsksWithTheSegmentsAndExclusions(t *testing.T) {
+	cf := newCampaignFake(t)
+	cf.setSegmentAudience()
+	opts := testOptions(t, cf.fakeAPI)
+	cs := connectWith(t, opts, manualClient(t), protocol20260728)
+
+	params, signed := question(t, cs)
+
+	for _, want := range []string{
+		"Send this campaign now to 1580 contacts on 1 list and 1 segment?\n",
+		"Lists:\n- \"Newsletter\": 1200 contacts\n",
+		"Segments:\n- \"Engaged\": 380 contacts\n",
+		"Excluded lists:\n- \"Customers\"\n",
+		"Excluded segments:\n- \"Lapsed\"\n",
+		"a contact on an excluded list or segment gets none",
+	} {
+		assert.Contains(t, params.Message, want)
+	}
+	state, ok := openState(opts.ConfirmationKey, signed, time.Now())
+	require.True(t, ok)
+	assert.Equal(t, []string{testListID}, state.ListIDs)
+	assert.Equal(t, []string{testSegmentID}, state.SegmentIDs)
+	assert.Equal(t, []string{testList2ID}, state.ExcludeListIDs)
+	assert.Equal(t, []string{testSegment2ID}, state.ExcludeSegmentIDs)
+
+	out := decode[campaignSendOutput](t, answer(t, cs, yes(), signed))
+	assert.True(t, out.Sent)
+	assert.Len(t, cf.sends(), 1)
+}
+
+func TestSendCampaignToASegmentNotCounted(t *testing.T) {
+	cf := newCampaignFake(t)
+	cf.setSegment(testSegment2ID, segmentJSON(testSegment2ID, "Lapsed", "ready", nil))
+	cf.set("list_ids", []string{})
+	cf.set("segment_ids", []string{testSegment2ID})
+	cs := connectWith(t, testOptions(t, cf.fakeAPI), manualClient(t), protocol20260728)
+
+	params, _ := question(t, cs)
+
+	assert.True(t, strings.HasPrefix(params.Message, "Send this campaign now to the contacts of 1 segment?\n"), params.Message)
+	assert.Contains(t, params.Message, "Segments:\n- \"Lapsed\": not counted\n")
+	assert.NotContains(t, params.Message, "Lists:")
+}
+
+func TestSendCampaignRefusesASegmentThatIsNotReadyWithoutAsking(t *testing.T) {
+	tests := []struct {
+		name     string
+		segment  map[string]any
+		excluded bool
+		want     string
+	}{
+		{"building", segmentJSON(testSegmentID, "Engaged", "building", nil), false, "still finding its members"},
+		{"building exclusion", segmentJSON(testSegmentID, "Engaged", "building", nil), true, "still finding its members"},
+		{"failed", func() map[string]any {
+			s := segmentJSON(testSegmentID, "Engaged", "failed", nil)
+			s["failure_reason"] = "The list in conditions[0] was deleted."
+			return s
+		}(), false, "has failed (The list in conditions[0] was deleted)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeAPI(t)
+			c := campaignJSON()
+			c["list_ids"] = []string{testListID}
+			if tt.excluded {
+				c["exclude_segment_ids"] = []string{testSegmentID}
+			} else {
+				c["segment_ids"] = []string{testSegmentID}
+			}
+			f.handle("GET "+apiPath("/campaigns/"+testCampaignID), http.StatusOK, c)
+			f.handle("GET "+apiPath("/lists/"+testListID), http.StatusOK, listJSON(testListID, "Newsletter", 1200))
+			f.handle("GET "+apiPath("/segments/"+testSegmentID), http.StatusOK, tt.segment)
+			rec := &fakeRecorder{}
+			opts := testOptions(t, f)
+			opts.Recorder = rec
+			client := &answeringClient{result: yes()}
+			cs := connectWith(t, opts, client.options(), protocol20260728)
+
+			text := requireToolError(t, callTool(t, cs, toolSendCampaign, sendArgs()))
+
+			assert.Contains(t, text, `segment "Engaged"`)
+			assert.Contains(t, text, tt.want)
+			assert.Empty(t, client.questions(), "the user is not asked")
+			for _, c := range f.calls() {
+				assert.NotEqual(t, http.MethodPost, c.Method, "nothing is sent")
+			}
+			assert.Equal(t, ErrorKindInvalidInput, rec.only(t).ErrorKind)
+		})
+	}
+}
+
+func TestSendCampaignRefusesSegmentsWithoutReachableContacts(t *testing.T) {
+	cf := newCampaignFake(t)
+	cf.setSegment(testSegment2ID, segmentJSON(testSegment2ID, "Lapsed", "ready", 0))
+	cf.set("list_ids", []string{})
+	cf.set("segment_ids", []string{testSegment2ID})
+	client := &answeringClient{result: yes()}
+	cs := connectWith(t, testOptions(t, cf.fakeAPI), client.options(), protocol20260728)
+
+	text := requireToolError(t, callTool(t, cs, toolSendCampaign, sendArgs()))
+
+	assert.Contains(t, text, "The campaign's segments have no reachable contacts")
+	assert.Empty(t, client.questions())
+	assert.Empty(t, cf.sends())
+}
+
+func TestSendCampaignWithSegmentsAndKnownScopesWithoutSegmentsRead(t *testing.T) {
+	cf := newCampaignFake(t)
+	cf.setSegmentAudience()
+	opts := testOptions(t, cf.fakeAPI)
+	opts.Scopes = []string{"campaigns:send", "campaigns:read", "lists:read"}
+	client := &answeringClient{result: yes()}
+	cs := connectWith(t, opts, client.options(), protocol20260728)
+
+	out := decode[campaignSendOutput](t, callTool(t, cs, toolSendCampaign, sendArgs()))
+
+	assert.False(t, out.Sent)
+	assert.Contains(t, out.Message, "may not read the campaign's segments")
+	assert.NotEmpty(t, out.DashboardURL)
+	assert.Empty(t, client.questions())
+	for _, c := range cf.calls() {
+		assert.NotContains(t, c.Path, "/segments/", "no segment is read")
+	}
+	assert.Empty(t, cf.sends())
+}
+
+func TestSendCampaignWithUnknownScopesAndAForbiddenSegmentRead(t *testing.T) {
+	f := newFakeAPI(t)
+	c := campaignJSON()
+	c["segment_ids"] = []string{testSegmentID}
+	f.handle("GET "+apiPath("/campaigns/"+testCampaignID), http.StatusOK, c)
+	f.handle("GET "+apiPath("/lists/"+testListID), http.StatusOK, listJSON(testListID, "Newsletter", 1200))
+	f.handle("GET "+apiPath("/lists/"+testList2ID), http.StatusOK, listJSON(testList2ID, "Customers", 345))
+	f.handle("GET "+apiPath("/segments/"+testSegmentID), http.StatusForbidden, map[string]any{"message": "api key does not have sufficient permissions"})
+	client := &answeringClient{result: yes()}
+	cs := connectWith(t, testOptions(t, f), client.options(), protocol20260728)
+
+	out := decode[campaignSendOutput](t, callTool(t, cs, toolSendCampaign, sendArgs()))
+
+	assert.False(t, out.Sent)
+	assert.Contains(t, out.Message, "lists and segments")
+	assert.NotEmpty(t, out.DashboardURL)
+	assert.Empty(t, client.questions())
 }

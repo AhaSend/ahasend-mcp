@@ -202,13 +202,13 @@ func acceptedYes(resp mcp.InputResponse) bool {
 	return ok && yes
 }
 
-// readFailure answers a failed read of the campaign or a list. With unknown
-// scopes, a 403 means the key may not read what the question shows, so the
-// user is sent to the dashboard instead.
+// readFailure answers a failed read of the campaign, a list or a segment.
+// With unknown scopes, a 403 means the key may not read what the question
+// shows, so the user is sent to the dashboard instead.
 func readFailure(env *toolEnv, call confirmCall, err error) (*mcp.CallToolResult, campaignSendOutput, error) {
 	if env.scopes == nil && isForbidden(err) {
 		return nil, dashboardOutput(env, call, "Nothing was sent: this connection may not read the campaign "+
-			"and its lists, which the confirmation shows the user."), nil
+			"and its lists and segments, which the confirmation shows the user."), nil
 	}
 	return nil, campaignSendOutput{}, err
 }
@@ -232,14 +232,14 @@ func sendCampaign(ctx context.Context, env *toolEnv, call confirmCall) (campaign
 		Status:   resp.Status,
 		SendAt:   call.sendAt,
 		Warnings: resp.Warnings,
-		Message: "AhaSend accepted the " + call.action() + ". The campaign's lists are checked, and it may be " +
+		Message: "AhaSend accepted the " + call.action() + ". The campaign's contacts are checked, and it may be " +
 			"reviewed, before mail goes out; get_campaign shows its status.",
 	}
 	return out, nil
 }
 
-// askToConfirm reads the campaign and its lists and returns the question as
-// an input request, with its signed state.
+// askToConfirm reads the campaign and its audience and returns the question
+// as an input request, with its signed state.
 func askToConfirm(ctx context.Context, env *toolEnv, call confirmCall) (*mcp.CallToolResult, campaignSendOutput, error) {
 	campaign, _, err := env.client.CampaignsAPI.GetCampaign(ctx, env.accountID, call.campaignID)
 	if err != nil {
@@ -254,18 +254,25 @@ func askToConfirm(ctx context.Context, env *toolEnv, call confirmCall) (*mcp.Cal
 		// Asking would waste the user's yes on a send the API refuses.
 		return nil, campaignSendOutput{}, campaignIssuesError(campaign.Issues)
 	}
-	lists := make([]*responses.ContactList, 0, len(campaign.ListIDs))
-	for _, id := range campaign.ListIDs {
-		list, _, err := env.client.ListsAPI.GetList(ctx, env.accountID, id)
-		if err != nil {
-			return readFailure(env, call, err)
-		}
-		lists = append(lists, list)
+	if len(campaign.SegmentIDs)+len(campaign.ExcludeSegmentIDs) > 0 && !env.mayUse(scopeSegmentsRead) {
+		return nil, dashboardOutput(env, call, "Nothing was sent: this connection may not read the campaign's "+
+			"segments, which the confirmation shows the user."), nil
 	}
-	if totalContacts(lists) == 0 {
+	audience, err := readAudience(ctx, env, campaign)
+	if err != nil {
+		return readFailure(env, call, err)
+	}
+	for _, segment := range append(slices.Clone(audience.segments), audience.excludeSegments...) {
+		if err := segmentNotReadyError(call, segment); err != nil {
+			// The send would be refused until the segment is ready.
+			return nil, campaignSendOutput{}, err
+		}
+	}
+	if total, counted := audience.reach(); counted && total == 0 {
 		// The send would be refused: there is no one to send to.
-		return nil, campaignSendOutput{}, invalidInput("The campaign's lists have no reachable contacts (0 in total), " +
-			"so the user was not asked and nothing was sent. Add confirmed, enabled contacts to the lists first.")
+		return nil, campaignSendOutput{}, invalidInput("The campaign's %s have no reachable contacts (0 in total), "+
+			"so the user was not asked and nothing was sent. Add confirmed, enabled contacts to them first.",
+			audience.sourcesNoun())
 	}
 
 	state := newConfirmState(call, campaign, time.Now().Add(confirmationTTL))
@@ -277,12 +284,132 @@ func askToConfirm(ctx context.Context, env *toolEnv, call confirmCall) (*mcp.Cal
 		InputRequests: mcp.InputRequestMap{
 			confirmInputID: &mcp.ElicitParams{
 				Mode:            "form",
-				Message:         confirmationMessage(call, campaign, lists),
+				Message:         confirmationMessage(call, campaign, audience),
 				RequestedSchema: confirmationSchema(call),
 			},
 		},
 		RequestState: signed,
 	}, campaignSendOutput{}, nil
+}
+
+// scopeSegmentsRead lets the question read the campaign's segments.
+const scopeSegmentsRead = "segments:read"
+
+// confirmAudience is the campaign's audience as the question shows it.
+type confirmAudience struct {
+	lists           []*responses.ContactList
+	segments        []*responses.SegmentDetail
+	excludeLists    []*responses.ContactList
+	excludeSegments []*responses.SegmentDetail
+}
+
+// readAudience reads the campaign's lists and segments, included and
+// excluded.
+func readAudience(ctx context.Context, env *toolEnv, c *responses.Campaign) (confirmAudience, error) {
+	var a confirmAudience
+	var err error
+	if a.lists, err = readLists(ctx, env, c.ListIDs); err != nil {
+		return confirmAudience{}, err
+	}
+	if a.segments, err = readSegments(ctx, env, c.SegmentIDs); err != nil {
+		return confirmAudience{}, err
+	}
+	if a.excludeLists, err = readLists(ctx, env, c.ExcludeListIDs); err != nil {
+		return confirmAudience{}, err
+	}
+	if a.excludeSegments, err = readSegments(ctx, env, c.ExcludeSegmentIDs); err != nil {
+		return confirmAudience{}, err
+	}
+	return a, nil
+}
+
+func readLists(ctx context.Context, env *toolEnv, ids []uuid.UUID) ([]*responses.ContactList, error) {
+	lists := make([]*responses.ContactList, 0, len(ids))
+	for _, id := range ids {
+		list, _, err := env.client.ListsAPI.GetList(ctx, env.accountID, id)
+		if err != nil {
+			return nil, err
+		}
+		lists = append(lists, list)
+	}
+	return lists, nil
+}
+
+func readSegments(ctx context.Context, env *toolEnv, ids []uuid.UUID) ([]*responses.SegmentDetail, error) {
+	segments := make([]*responses.SegmentDetail, 0, len(ids))
+	for _, id := range ids {
+		segment, _, err := env.client.SegmentsAPI.GetSegment(ctx, env.accountID, id)
+		if err != nil {
+			return nil, err
+		}
+		segments = append(segments, segment)
+	}
+	return segments, nil
+}
+
+// reach adds up the contact counts of the included lists and segments.
+// counted is false when a segment's count is missing.
+func (a confirmAudience) reach() (total int, counted bool) {
+	for _, l := range a.lists {
+		total += l.ContactCount
+	}
+	counted = true
+	for _, s := range a.segments {
+		if s.MarketableCount == nil {
+			counted = false
+			continue
+		}
+		total += *s.MarketableCount
+	}
+	return total, counted
+}
+
+// sourcesText counts the included lists and segments, such as "2 lists and
+// 1 segment".
+func (a confirmAudience) sourcesText() string {
+	lists := countText(len(a.lists), "list")
+	if len(a.segments) == 0 {
+		return lists
+	}
+	segments := countText(len(a.segments), "segment")
+	if len(a.lists) == 0 {
+		return segments
+	}
+	return lists + " and " + segments
+}
+
+// sourcesNoun names the kinds of included sources, such as "lists and
+// segments".
+func (a confirmAudience) sourcesNoun() string {
+	switch {
+	case len(a.segments) == 0:
+		return "lists"
+	case len(a.lists) == 0:
+		return "segments"
+	}
+	return "lists and segments"
+}
+
+func countText(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+// segmentNotReadyError refuses a campaign with a segment that is building or
+// has failed, which the send refuses.
+func segmentNotReadyError(call confirmCall, s *responses.SegmentDetail) error {
+	switch s.State {
+	case common.SegmentStateBuilding:
+		return invalidInput("The segment %q is still finding its members, so the user was not asked and nothing "+
+			"was sent. Call %s again when get_segment shows it ready.", s.Name, call.tool)
+	case common.SegmentStateFailed:
+		return invalidInput("The segment %q has failed (%s), so the user was not asked and nothing was sent. "+
+			"update_segment builds it again; or remove it from the campaign.", s.Name,
+			strings.TrimRight(deref(s.FailureReason), ". "))
+	}
+	return nil
 }
 
 // confirmationMessage is the question the user reads. Some clients show only
@@ -291,13 +418,12 @@ func askToConfirm(ctx context.Context, env *toolEnv, call confirmCall) (*mcp.Cal
 // AhaSend derives come first; every value the agent can write, such as names
 // and the subject, is shown through userText, so it cannot add lines that
 // look like part of the summary.
-func confirmationMessage(call confirmCall, c *responses.Campaign, lists []*responses.ContactList) string {
+func confirmationMessage(call confirmCall, c *responses.Campaign, a confirmAudience) string {
 	var b strings.Builder
-	listWord := "lists"
-	if len(lists) == 1 {
-		listWord = "list"
+	reach := "the contacts of " + a.sourcesText()
+	if total, counted := a.reach(); counted {
+		reach = fmt.Sprintf("%d contacts on %s", total, a.sourcesText())
 	}
-	reach := fmt.Sprintf("%d contacts on %d %s", totalContacts(lists), len(lists), listWord)
 	if call.sendAt != nil {
 		fmt.Fprintf(&b, "Schedule this campaign for %s, to %s?\n", sendTimeText(*call.sendAt), reach)
 	} else {
@@ -314,24 +440,44 @@ func confirmationMessage(call confirmCall, c *responses.Campaign, lists []*respo
 		sender = userText(campaignSenderText(c.From))
 	}
 	fmt.Fprintf(&b, "Sender: %s\n", sender)
-	b.WriteString("Lists:\n")
-	if len(lists) == 0 {
-		b.WriteString("- (none)\n")
+	if len(a.lists) > 0 || len(a.segments) == 0 {
+		b.WriteString("Lists:\n")
+		if len(a.lists) == 0 {
+			b.WriteString("- (none)\n")
+		}
+		for _, l := range a.lists {
+			fmt.Fprintf(&b, "- %s: %d contacts\n", userText(l.Name), l.ContactCount)
+		}
 	}
-	for _, l := range lists {
-		fmt.Fprintf(&b, "- %s: %d contacts\n", userText(l.Name), l.ContactCount)
+	if len(a.segments) > 0 {
+		b.WriteString("Segments:\n")
+		for _, s := range a.segments {
+			count := "not counted"
+			if s.MarketableCount != nil {
+				count = fmt.Sprintf("%d contacts", *s.MarketableCount)
+			}
+			fmt.Fprintf(&b, "- %s: %s\n", userText(s.Name), count)
+		}
 	}
-	b.WriteString("\nA contact on several lists gets the campaign once. Contact counts can change before the send.")
+	if len(a.excludeLists) > 0 {
+		b.WriteString("Excluded lists:\n")
+		for _, l := range a.excludeLists {
+			fmt.Fprintf(&b, "- %s\n", userText(l.Name))
+		}
+	}
+	if len(a.excludeSegments) > 0 {
+		b.WriteString("Excluded segments:\n")
+		for _, s := range a.excludeSegments {
+			fmt.Fprintf(&b, "- %s\n", userText(s.Name))
+		}
+	}
+	if len(a.segments)+len(a.excludeLists)+len(a.excludeSegments) == 0 {
+		b.WriteString("\nA contact on several lists gets the campaign once. Contact counts can change before the send.")
+		return b.String()
+	}
+	b.WriteString("\nA contact on several lists or segments gets the campaign once, and a contact on an excluded list " +
+		"or segment gets none. Contact counts can change before the send.")
 	return b.String()
-}
-
-// totalContacts adds up the lists' contact counts.
-func totalContacts(lists []*responses.ContactList) int {
-	total := 0
-	for _, l := range lists {
-		total += l.ContactCount
-	}
-	return total
 }
 
 // sendTimeText formats a send time in UTC, with seconds only when they are
@@ -393,26 +539,32 @@ func confirmationSchema(call confirmCall) map[string]any {
 // confirmState is what the question was about. It travels to the client and
 // back as the signed requestState.
 type confirmState struct {
-	Tool        string   `json:"tool"`
-	AccountID   string   `json:"account_id"`
-	CampaignID  string   `json:"campaign_id"`
-	SendAt      string   `json:"send_at"`
-	UpdatedAt   string   `json:"updated_at"`
-	ListIDs     []string `json:"list_ids"`
-	ContentHash string   `json:"content_hash"`
-	ExpiresAt   int64    `json:"expires_at"`
+	Tool              string   `json:"tool"`
+	AccountID         string   `json:"account_id"`
+	CampaignID        string   `json:"campaign_id"`
+	SendAt            string   `json:"send_at"`
+	UpdatedAt         string   `json:"updated_at"`
+	ListIDs           []string `json:"list_ids"`
+	SegmentIDs        []string `json:"segment_ids"`
+	ExcludeListIDs    []string `json:"exclude_list_ids"`
+	ExcludeSegmentIDs []string `json:"exclude_segment_ids"`
+	ContentHash       string   `json:"content_hash"`
+	ExpiresAt         int64    `json:"expires_at"`
 }
 
 func newConfirmState(call confirmCall, c *responses.Campaign, expires time.Time) confirmState {
 	return confirmState{
-		Tool:        call.tool,
-		AccountID:   call.accountID.String(),
-		CampaignID:  call.campaignID.String(),
-		SendAt:      call.sendAtText(),
-		UpdatedAt:   c.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		ListIDs:     campaignListIDs(c),
-		ContentHash: contentHash(c.Content),
-		ExpiresAt:   expires.Unix(),
+		Tool:              call.tool,
+		AccountID:         call.accountID.String(),
+		CampaignID:        call.campaignID.String(),
+		SendAt:            call.sendAtText(),
+		UpdatedAt:         c.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		ListIDs:           idStrings(c.ListIDs),
+		SegmentIDs:        idStrings(c.SegmentIDs),
+		ExcludeListIDs:    idStrings(c.ExcludeListIDs),
+		ExcludeSegmentIDs: idStrings(c.ExcludeSegmentIDs),
+		ContentHash:       contentHash(c.Content),
+		ExpiresAt:         expires.Unix(),
 	}
 }
 
@@ -426,19 +578,14 @@ func (s *confirmState) isFor(call confirmCall) bool {
 }
 
 // matches reports whether the campaign is still the one the user was asked
-// about: the same updated_at, lists and content.
+// about: the same updated_at, audience and content.
 func (s *confirmState) matches(c *responses.Campaign) bool {
 	return s.UpdatedAt == c.UpdatedAt.UTC().Format(time.RFC3339Nano) &&
-		slices.Equal(s.ListIDs, campaignListIDs(c)) &&
+		slices.Equal(s.ListIDs, idStrings(c.ListIDs)) &&
+		slices.Equal(s.SegmentIDs, idStrings(c.SegmentIDs)) &&
+		slices.Equal(s.ExcludeListIDs, idStrings(c.ExcludeListIDs)) &&
+		slices.Equal(s.ExcludeSegmentIDs, idStrings(c.ExcludeSegmentIDs)) &&
 		s.ContentHash == contentHash(c.Content)
-}
-
-func campaignListIDs(c *responses.Campaign) []string {
-	ids := make([]string, 0, len(c.ListIDs))
-	for _, id := range c.ListIDs {
-		ids = append(ids, id.String())
-	}
-	return ids
 }
 
 // contentHash is the SHA-256 of a campaign's content.

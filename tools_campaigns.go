@@ -13,6 +13,15 @@ import (
 	"github.com/google/uuid"
 )
 
+// campaignAudienceNote states the audience rules of the campaign write tools.
+const campaignAudienceNote = "The audience is list_ids and segment_ids, less exclude_list_ids and " +
+	"exclude_segment_ids. A campaign needs at least one list or segment to send to. A list or segment cannot be " +
+	"both included and excluded. An exclusion wins: a contact with any membership of an excluded list, whatever " +
+	"its status, or a member of an excluded segment gets nothing, also when an included list or segment reaches " +
+	"it. A contact reached through several lists and segments gets one message. " + segmentUnsubscribeNote + " " +
+	"While a segment of the audience is being rebuilt the write is refused with 409 and nothing changes: call " +
+	"again in a minute. A segment must be ready before the campaign can be sent."
+
 func campaignsTools() []tool {
 	return []tool{
 		newTool(ToolInfo{
@@ -22,7 +31,7 @@ func campaignsTools() []tool {
 			RequiredScopes: []string{"campaigns:read"},
 			Annotations:    annRead(),
 		}, "Lists the marketing campaigns of this account, newest first, with their status, subject, sender and "+
-			"send times, but not their lists, content or issues. Use it to find a campaign; get_campaign returns "+
+			"send times, but not their audience, content or issues. Use it to find a campaign; get_campaign returns "+
 			"one in full. The result holds one page and a next_cursor for the page after it.",
 			listCampaigns),
 		newTool(ToolInfo{
@@ -31,9 +40,9 @@ func campaignsTools() []tool {
 			Toolset:        ToolsetCampaigns,
 			RequiredScopes: []string{"campaigns:read"},
 			Annotations:    annRead(),
-		}, "Returns one campaign with its lists, content and status. For a draft, ready tells whether it can "+
-			"be sent and issues lists what to fix first, such as a missing subject, sender, list or unsubscribe "+
-			"link. Use it to check a campaign before sending it. "+ahamlReadNote,
+		}, "Returns one campaign with its audience (lists, segments and exclusions), content and status. For a "+
+			"draft, ready tells whether it can be sent and issues lists what to fix first, such as a missing "+
+			"subject, sender, list or segment, or unsubscribe link. Use it to check a campaign before sending it. "+ahamlReadNote,
 			getCampaign),
 		newTool(ToolInfo{
 			Name:           "create_campaign",
@@ -46,8 +55,8 @@ func campaignsTools() []tool {
 			"(an empty design), or from a campaign template named by template_id, which the campaign copies. The "+
 			"HTML must link to {{ unsubscribe_url }} or {{ unsubscribe_link }} before the campaign can be sent; "+
 			`in AhaML, write <Link href="{{ unsubscribe_url }}">Unsubscribe</Link>. `+
-			"Nothing is sent. The result is the campaign, without its content, with ready and the issues left "+
-			"to fix. "+ahamlWriteNote,
+			"Nothing is sent. "+campaignAudienceNote+" The result is the campaign, without its content, with ready "+
+			"and the issues left to fix. "+ahamlWriteNote,
 			createCampaign),
 		newTool(ToolInfo{
 			Name:           "update_campaign",
@@ -56,9 +65,11 @@ func campaignsTools() []tool {
 			RequiredScopes: []string{"campaigns:write"},
 			Annotations:    annWrite(),
 		}, "Changes a draft campaign; a campaign that is not a draft cannot be changed. Only the fields given "+
-			"change, and list_ids replaces the lists. The design's editor cannot change: give markup for a "+
-			"Simple Editor design, mjml for an advanced design and html for an html design. The result is the "+
-			"campaign, without its content, with ready and the issues left to fix. "+ahamlUpdateNote,
+			"change. Each of list_ids, segment_ids, exclude_list_ids and exclude_segment_ids replaces its own set "+
+			"when given, and [] empties it; to move a campaign from lists to segments, give segment_ids and an "+
+			"empty list_ids. The design's editor cannot change: give markup for a Simple Editor design, mjml for "+
+			"an advanced design and html for an html design. "+campaignAudienceNote+" The result is the campaign, "+
+			"without its content, with ready and the issues left to fix. "+ahamlUpdateNote,
 			updateCampaign),
 		newTool(ToolInfo{
 			Name:           "delete_campaign",
@@ -76,8 +87,9 @@ func campaignsTools() []tool {
 			RequiredScopes: []string{"campaigns:write"},
 			Annotations:    annWrite(),
 		}, "Makes a new draft from a campaign in any status, with its design, subject, preview text, sender "+
-			"and the lists that still exist. Use it to send a campaign again or start from an old one. The "+
-			"result is the new draft, without its content.",
+			"and the lists and segments that still exist, included and excluded. Use it to send a campaign again "+
+			"or start from an old one. While a segment of the audience is being rebuilt it is refused with 409: "+
+			"call again in a minute. The result is the new draft, without its content.",
 			duplicateCampaign),
 		newTool(ToolInfo{
 			Name:           "send_campaign_test",
@@ -97,11 +109,13 @@ func campaignsTools() []tool {
 			Toolset:        ToolsetCampaigns,
 			RequiredScopes: []string{"campaigns:send", "campaigns:read", "lists:read"},
 			Annotations:    annWriteOpenWorld(),
-		}, "Sends a draft campaign to its lists now, after the user confirms. The user is always asked "+
-			"first, in a form that shows the campaign, its lists with their contact counts, and the send time; "+
+		}, "Sends a draft campaign to its lists and segments now, after the user confirms. The user is always "+
+			"asked first, in a form that shows the campaign, its lists and segments with their contact counts, "+
+			"its exclusions, and the send time; "+
 			"nothing is sent without their yes. When this client cannot show the form, nothing is sent and the "+
-			"result holds dashboard_url, where the user sends the campaign. A campaign with issues is refused; "+
-			"get_campaign shows them. After the send, the campaign's lists are checked and it may be reviewed "+
+			"result holds dashboard_url, where the user sends the campaign. A campaign with issues, or with a "+
+			"segment that is not ready, is refused; get_campaign and get_segment show them. After the send, the "+
+			"campaign's contacts are checked and it may be reviewed "+
 			"before mail goes out; get_campaign shows its status. The result says whether the send was accepted.",
 			false),
 		newCampaignSendTool(ToolInfo{
@@ -111,10 +125,11 @@ func campaignsTools() []tool {
 			RequiredScopes: []string{"campaigns:send", "campaigns:read", "lists:read"},
 			Annotations:    annWriteOpenWorld(),
 		}, "Schedules a draft campaign to send at send_at, at least 1 minute ahead, after the user confirms. "+
-			"The user is always asked first, in a form that shows the campaign, its lists with their contact "+
-			"counts, and the send time; nothing is scheduled without their yes. When this client cannot show "+
-			"the form, nothing is scheduled and the result holds dashboard_url, where the user schedules the "+
-			"campaign. A campaign with issues is refused; get_campaign shows them. To change the time, use "+
+			"The user is always asked first, in a form that shows the campaign, its lists and segments with their "+
+			"contact counts, its exclusions, and the send time; nothing is scheduled without their yes. When this "+
+			"client cannot show the form, nothing is scheduled and the result holds dashboard_url, where the user "+
+			"schedules the campaign. A campaign with issues, or with a segment that is not ready, is refused; "+
+			"get_campaign and get_segment show them. To change the time, use "+
 			"unschedule_campaign and schedule again. The result says whether the schedule was accepted.",
 			true),
 		newTool(ToolInfo{
@@ -207,23 +222,26 @@ type campaignIssue struct {
 // issues, but without its content.
 type campaignResult struct {
 	campaignSummary
-	ListIDs        []string        `json:"list_ids" jsonschema:"The lists the campaign sends to, in order."`
-	Editor         string          `json:"editor,omitempty" jsonschema:"The design's editor: advanced (MJML), html, or simple (the Simple Editor, written here as AhaML in markup). Missing while the campaign has no design."`
-	Ready          *bool           `json:"ready,omitempty" jsonschema:"For a draft: true when it has no issue and can be sent."`
-	Issues         []campaignIssue `json:"issues,omitempty" jsonschema:"For a draft: what keeps it from being sent."`
-	MarkupWarnings []markupWarning `json:"markup_warnings,omitempty" jsonschema:"Warnings about the markup this write stored; only a write with markup has them."`
+	ListIDs           []string        `json:"list_ids" jsonschema:"The lists the campaign sends to, in order."`
+	SegmentIDs        []string        `json:"segment_ids" jsonschema:"The segments the campaign sends to."`
+	ExcludeListIDs    []string        `json:"exclude_list_ids" jsonschema:"The lists whose contacts get nothing from the campaign."`
+	ExcludeSegmentIDs []string        `json:"exclude_segment_ids" jsonschema:"The segments whose members get nothing from the campaign."`
+	Editor            string          `json:"editor,omitempty" jsonschema:"The design's editor: advanced (MJML), html, or simple (the Simple Editor, written here as AhaML in markup). Missing while the campaign has no design."`
+	Ready             *bool           `json:"ready,omitempty" jsonschema:"For a draft: true when it has no issue and can be sent."`
+	Issues            []campaignIssue `json:"issues,omitempty" jsonschema:"For a draft: what keeps it from being sent."`
+	MarkupWarnings    []markupWarning `json:"markup_warnings,omitempty" jsonschema:"Warnings about the markup this write stored; only a write with markup has them."`
 }
 
 func campaignResultFrom(c *responses.Campaign) campaignResult {
 	out := campaignResult{
-		campaignSummary: campaignSummaryFrom(&c.CampaignListItem),
-		ListIDs:         make([]string, 0, len(c.ListIDs)),
-		Editor:          deref(c.Editor),
-		Ready:           c.Ready,
-		MarkupWarnings:  markupWarningsFrom(c.MarkupWarnings),
-	}
-	for _, id := range c.ListIDs {
-		out.ListIDs = append(out.ListIDs, id.String())
+		campaignSummary:   campaignSummaryFrom(&c.CampaignListItem),
+		ListIDs:           idStrings(c.ListIDs),
+		SegmentIDs:        idStrings(c.SegmentIDs),
+		ExcludeListIDs:    idStrings(c.ExcludeListIDs),
+		ExcludeSegmentIDs: idStrings(c.ExcludeSegmentIDs),
+		Editor:            deref(c.Editor),
+		Ready:             c.Ready,
+		MarkupWarnings:    markupWarningsFrom(c.MarkupWarnings),
 	}
 	for _, issue := range c.Issues {
 		out.Issues = append(out.Issues, campaignIssue{Code: issue.Code, Message: issue.Message})
@@ -279,14 +297,24 @@ func getCampaign(ctx context.Context, env *toolEnv, in campaignIDInput) (campaig
 	return campaignDetail{campaignResult: campaignResultFrom(c), Content: templateContentFrom(c.Content)}, nil
 }
 
-// listIDs reads list ID arguments.
-func listIDs(values []string) ([]uuid.UUID, error) {
+// idStrings returns IDs as strings, never nil.
+func idStrings(ids []uuid.UUID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, id.String())
+	}
+	return out
+}
+
+// parseIDs reads an ID list argument named field. It keeps nil, an omitted
+// argument, apart from an empty list.
+func parseIDs(field string, values []string) ([]uuid.UUID, error) {
 	if values == nil {
 		return nil, nil
 	}
 	ids := make([]uuid.UUID, 0, len(values))
 	for _, v := range values {
-		id, err := parseID("list_ids", v)
+		id, err := parseID(field, v)
 		if err != nil {
 			return nil, err
 		}
@@ -295,32 +323,67 @@ func listIDs(values []string) ([]uuid.UUID, error) {
 	return ids, nil
 }
 
+// audienceInput is the audience a campaign write takes. On an update, each
+// field omitted keeps its set and an empty one empties it.
+type audienceInput struct {
+	ListIDs           []string `json:"list_ids,omitempty" jsonschema:"IDs of the lists to send to, in order, up to 50 lists in all with exclude_list_ids. On update_campaign it replaces the lists; [] removes them."`
+	SegmentIDs        []string `json:"segment_ids,omitempty" jsonschema:"IDs of the segments to send to, up to 10 segments in all with exclude_segment_ids. On update_campaign it replaces the segments; [] removes them."`
+	ExcludeListIDs    []string `json:"exclude_list_ids,omitempty" jsonschema:"IDs of lists whose contacts get nothing, whatever their membership status, also when an included list or segment reaches them. On update_campaign it replaces the excluded lists; [] removes them."`
+	ExcludeSegmentIDs []string `json:"exclude_segment_ids,omitempty" jsonschema:"IDs of segments whose members get nothing, also when an included list or segment reaches them. On update_campaign it replaces the excluded segments; [] removes them."`
+}
+
+// audienceIDs is a read audienceInput.
+type audienceIDs struct {
+	lists, segments, excludeLists, excludeSegments []uuid.UUID
+}
+
+func (in audienceInput) ids() (audienceIDs, error) {
+	var out audienceIDs
+	var err error
+	if out.lists, err = parseIDs("list_ids", in.ListIDs); err != nil {
+		return audienceIDs{}, err
+	}
+	if out.segments, err = parseIDs("segment_ids", in.SegmentIDs); err != nil {
+		return audienceIDs{}, err
+	}
+	if out.excludeLists, err = parseIDs("exclude_list_ids", in.ExcludeListIDs); err != nil {
+		return audienceIDs{}, err
+	}
+	if out.excludeSegments, err = parseIDs("exclude_segment_ids", in.ExcludeSegmentIDs); err != nil {
+		return audienceIDs{}, err
+	}
+	return out, nil
+}
+
 type createCampaignInput struct {
 	Name      string        `json:"name" jsonschema:"Campaign name; recipients do not see it."`
 	Subject   string        `json:"subject,omitempty" jsonschema:"Subject line."`
 	Preheader string        `json:"preheader,omitempty" jsonschema:"Preview text."`
 	From      *addressInput `json:"from,omitempty" jsonschema:"Sender, on a domain of this account with valid DNS records."`
 	ReplyTo   string        `json:"reply_to,omitempty" jsonschema:"Reply-to address, without a display name."`
-	ListIDs   []string      `json:"list_ids,omitempty" jsonschema:"IDs of the lists to send to, 1 to 50, in order."`
-	Editor    string        `json:"editor,omitempty" jsonschema:"advanced, html or simple. Alone, it makes an empty design; with content it must match it: simple for markup, advanced for mjml, html for html alone. Not with template_id."`
+	audienceInput
+	Editor string `json:"editor,omitempty" jsonschema:"advanced, html or simple. Alone, it makes an empty design; with content it must match it: simple for markup, advanced for mjml, html for html alone. Not with template_id."`
 	contentInput
 	TemplateID string `json:"template_id,omitempty" jsonschema:"ID of a campaign template whose design the campaign copies. Not with editor or content."`
 }
 
 func createCampaign(ctx context.Context, env *toolEnv, in createCampaignInput) (campaignResult, error) {
-	lists, err := listIDs(in.ListIDs)
+	audience, err := in.ids()
 	if err != nil {
 		return campaignResult{}, err
 	}
 	req := requests.CreateCampaignRequest{
-		Name:      in.Name,
-		Subject:   optionalString(in.Subject),
-		Preheader: optionalString(in.Preheader),
-		From:      senderPtr(in.From),
-		ReplyTo:   optionalString(strings.TrimSpace(in.ReplyTo)),
-		ListIDs:   lists,
-		Editor:    optionalString(in.Editor),
-		Content:   in.request(),
+		Name:              in.Name,
+		Subject:           optionalString(in.Subject),
+		Preheader:         optionalString(in.Preheader),
+		From:              senderPtr(in.From),
+		ReplyTo:           optionalString(strings.TrimSpace(in.ReplyTo)),
+		ListIDs:           audience.lists,
+		SegmentIDs:        audience.segments,
+		ExcludeListIDs:    audience.excludeLists,
+		ExcludeSegmentIDs: audience.excludeSegments,
+		Editor:            optionalString(in.Editor),
+		Content:           in.request(),
 	}
 	if in.TemplateID != "" {
 		templateID, err := parseID("template_id", in.TemplateID)
@@ -343,7 +406,7 @@ type updateCampaignInput struct {
 	Preheader  *string       `json:"preheader,omitempty" jsonschema:"New preview text. An empty value clears it."`
 	From       *addressInput `json:"from,omitempty" jsonschema:"New sender, address and name together. An empty email clears it; the reply-to is kept."`
 	ReplyTo    *string       `json:"reply_to,omitempty" jsonschema:"New reply-to address, without a display name. An empty value clears it."`
-	ListIDs    []string      `json:"list_ids,omitempty" jsonschema:"New lists, 1 to 50, replacing the campaign's lists."`
+	audienceInput
 	contentUpdateInput
 }
 
@@ -352,12 +415,9 @@ func updateCampaign(ctx context.Context, env *toolEnv, in updateCampaignInput) (
 	if err != nil {
 		return campaignResult{}, err
 	}
-	lists, err := listIDs(in.ListIDs)
+	audience, err := in.ids()
 	if err != nil {
 		return campaignResult{}, err
-	}
-	if lists != nil && len(lists) == 0 {
-		return campaignResult{}, invalidInput("list_ids needs at least one list; omit it to keep the lists.")
 	}
 	content, err := in.request()
 	if err != nil {
@@ -367,12 +427,15 @@ func updateCampaign(ctx context.Context, env *toolEnv, in updateCampaignInput) (
 		Name: optionalString(in.Name),
 		// ahasend-go sends an empty subject, preview text or reply-to as
 		// null, which clears it.
-		Subject:   in.Subject,
-		Preheader: in.Preheader,
-		From:      addressUpdate(in.From),
-		ReplyTo:   trimmed(in.ReplyTo),
-		ListIDs:   lists,
-		Content:   content,
+		Subject:           in.Subject,
+		Preheader:         in.Preheader,
+		From:              addressUpdate(in.From),
+		ReplyTo:           trimmed(in.ReplyTo),
+		ListIDs:           audience.lists,
+		SegmentIDs:        audience.segments,
+		ExcludeListIDs:    audience.excludeLists,
+		ExcludeSegmentIDs: audience.excludeSegments,
+		Content:           content,
 	}
 	c, _, err := env.client.CampaignsAPI.UpdateCampaign(ctx, env.accountID, id, req)
 	if err != nil {
@@ -554,6 +617,8 @@ type campaignRecipient struct {
 	ContactID            string    `json:"contact_id" jsonschema:"Contact ID."`
 	Email                string    `json:"email" jsonschema:"Address the campaign sent to."`
 	ListName             string    `json:"list_name,omitempty" jsonschema:"The list through which the contact got the campaign; missing when it came through a segment."`
+	SegmentID            string    `json:"segment_id,omitempty" jsonschema:"The segment through which the contact got the campaign; missing when it came through a list, which a contact on a list and a segment did."`
+	SegmentName          string    `json:"segment_name,omitempty" jsonschema:"The segment's name at the send."`
 	Status               string    `json:"status" jsonschema:"Status, as the report names it."`
 	BounceClassification string    `json:"bounce_classification,omitempty" jsonschema:"Bounce classification."`
 	BounceReason         string    `json:"bounce_reason,omitempty" jsonschema:"Bounce reason."`
@@ -590,17 +655,22 @@ func listCampaignRecipients(ctx context.Context, env *toolEnv, in listCampaignRe
 	}
 	out := listCampaignRecipientsOutput{Recipients: []campaignRecipient{}, pageOutput: pageOutputFrom(resp.Pagination)}
 	for _, r := range resp.Data {
-		out.Recipients = append(out.Recipients, campaignRecipient{
+		recipient := campaignRecipient{
 			ContactID:            r.ContactID.String(),
 			Email:                r.Email,
 			ListName:             deref(r.ListName),
+			SegmentName:          deref(r.SegmentName),
 			Status:               r.Status,
 			BounceClassification: deref(r.BounceClassification),
 			BounceReason:         deref(r.BounceReason),
 			BounceMessage:        deref(r.BounceMessage),
 			Attempts:             r.Attempts,
 			UpdatedAt:            r.UpdatedAt,
-		})
+		}
+		if r.SegmentID != nil {
+			recipient.SegmentID = r.SegmentID.String()
+		}
+		out.Recipients = append(out.Recipients, recipient)
 	}
 	return out, nil
 }
