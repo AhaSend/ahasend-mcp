@@ -225,11 +225,12 @@ type sendOutput struct {
 }
 
 type sentMessage struct {
-	ID        string     `json:"id,omitempty" jsonschema:"Message ID, for get_message, diagnose_message and cancel_scheduled_email."`
-	Recipient string     `json:"recipient" jsonschema:"Recipient email address."`
-	Status    string     `json:"status" jsonschema:"Status of the message right after the send."`
-	Error     string     `json:"error,omitempty" jsonschema:"Why this recipient's message was not sent."`
-	SendAt    *time.Time `json:"send_at,omitempty" jsonschema:"Scheduled first delivery attempt."`
+	ID              string     `json:"id,omitempty" jsonschema:"Message ID, for get_message, diagnose_message and cancel_scheduled_email."`
+	MessageIDHeader string     `json:"message_id_header,omitempty" jsonschema:"The email's Message-ID header, for the message_id_header filter of list_messages."`
+	Recipient       string     `json:"recipient" jsonschema:"Recipient email address."`
+	Status          string     `json:"status" jsonschema:"Status of the message right after the send."`
+	Error           string     `json:"error,omitempty" jsonschema:"Why this recipient's message was not sent."`
+	SendAt          *time.Time `json:"send_at,omitempty" jsonschema:"Scheduled first delivery attempt."`
 }
 
 func sendOutputFrom(resp *responses.CreateMessageResponse) sendOutput {
@@ -238,6 +239,9 @@ func sendOutputFrom(resp *responses.CreateMessageResponse) sendOutput {
 		sent := sentMessage{Recipient: m.Recipient.Email, Status: m.Status}
 		if m.ID != nil {
 			sent.ID = *m.ID
+		}
+		if m.MessageIDHeader != nil {
+			sent.MessageIDHeader = *m.MessageIDHeader
 		}
 		if m.Error != nil {
 			sent.Error = *m.Error

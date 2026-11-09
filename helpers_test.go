@@ -298,11 +298,13 @@ func domainJSON(name string) map[string]any {
 func sendResponse(recipients ...string) map[string]any {
 	var data []map[string]any
 	for i, r := range recipients {
+		id := uuid.NewSHA1(uuid.Nil, []byte{byte(i)}).String()
 		data = append(data, map[string]any{
-			"object":    "message",
-			"id":        uuid.NewSHA1(uuid.Nil, []byte{byte(i)}).String(),
-			"recipient": map[string]any{"email": r},
-			"status":    "queued",
+			"object":            "message",
+			"id":                id,
+			"message_id_header": "<" + id + "@mail.example.com>",
+			"recipient":         map[string]any{"email": r},
+			"status":            "queued",
 		})
 	}
 	return map[string]any{"object": "list", "data": data}
