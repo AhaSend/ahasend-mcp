@@ -42,6 +42,7 @@ func TestSendEmail(t *testing.T) {
 	assert.Equal(t, "a@example.org", out.Messages[0].Recipient)
 	assert.Equal(t, "queued", out.Messages[0].Status)
 	assert.NotEmpty(t, out.Messages[0].ID)
+	assert.Equal(t, "<"+out.Messages[0].ID+"@mail.example.com>", out.Messages[0].MessageIDHeader)
 }
 
 func TestSendEmailAttachments(t *testing.T) {
