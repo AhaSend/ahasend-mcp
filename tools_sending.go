@@ -46,7 +46,8 @@ func sendingTools() []tool {
 			Annotations:    annWriteOpenWorld(),
 		}, "Sends a stored transactional template to each recipient in recipients; every recipient gets a "+
 			"separate message. Use it instead of send_email when the content is a template in this account. "+
-			"Each recipient's substitutions fill the template's variables: get_template lists them, and each "+
+			"Each recipient's substitutions fill the variables of the published copy, which a send uses: "+
+			"get_published_template lists them, and each "+
 			"one's kind tells what to send, with a list taking an array of objects with its item_fields as keys. "+
 			"Without from or subject, the template's default sender and subject are used. Set sandbox to true to test without "+
 			"delivering. The result lists one entry per recipient with the new message ID and its status, or "+

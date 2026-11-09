@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/AhaSend/ahasend-go/api"
+	"github.com/AhaSend/ahasend-go/models/common"
 	"github.com/AhaSend/ahasend-go/models/requests"
 	"github.com/AhaSend/ahasend-go/models/responses"
 )
@@ -28,7 +29,7 @@ func managementTools() []tool {
 			Toolset:        ToolsetManagement,
 			RequiredScopes: []string{"webhooks:read"},
 			Annotations:    annRead(),
-		}, "Lists the webhooks of this account with their URL, the events each sends, the domains it covers "+
+		}, "Lists the webhooks of this account with their URL, the events each sends, the domains and origins it covers "+
 			"and its success and error counts since it was created, but not their signing secrets. Use it to find a webhook or "+
 			"see why events are not arriving. A connection limited to some domains sees only their webhooks. "+
 			"The result holds one page and a next_cursor for the page after it.",
@@ -39,7 +40,7 @@ func managementTools() []tool {
 			Toolset:        ToolsetManagement,
 			RequiredScopes: []string{"webhooks:read"},
 			Annotations:    annRead(),
-		}, "Returns one webhook with its URL, events, domains and success and error counts since it was "+
+		}, "Returns one webhook with its URL, events, domains, origins and success and error counts since it was "+
 			"created, but not its "+
 			"signing secret, which AhaSend returns only when the webhook is created. Use it to check a webhook's "+
 			"settings or why its posts fail.",
@@ -52,8 +53,9 @@ func managementTools() []tool {
 			Annotations:    annWrite(),
 		}, "Creates a webhook that posts the chosen email events to a URL, for every sending domain or only "+
 			"the domains given. A webhook for every domain needs the webhooks:write:all scope; a connection "+
-			"limited to some domains must list them in domains. Use it when the user's app needs delivery, bounce, open, click or suppression "+
-			"events. The result holds the webhook's signing secret, which the app needs to verify the posts; "+
+			"limited to some domains must list them in domains. Use it when the user's app needs delivery, bounce, open, click, unsubscribe, "+
+			"complaint, suppression or contact events. Contact events need the contacts:read scope and the account's marketing features; "+
+			"the added_to_list, removed_from_list, subscribed, unsubscribed and complained ones also need lists:read. The result holds the webhook's signing secret, which the app needs to verify the posts; "+
 			"AhaSend returns it only in this result.",
 			createWebhook),
 		newTool(ToolInfo{
@@ -62,8 +64,9 @@ func managementTools() []tool {
 			Toolset:        ToolsetManagement,
 			RequiredScopes: []string{"webhooks:write"},
 			Annotations:    annWrite(),
-		}, "Changes a webhook's name, URL, enabled state, events or domains. Use it to point a webhook at a new "+
-			"URL, turn it off or change what it sends. Only the fields given change. "+
+		}, "Changes a webhook's name, URL, enabled state, events, origins or domains. Use it to point a webhook at a new "+
+			"URL, turn it off or change what it sends. Only the fields given change. While the webhook is enabled with contact events on, "+
+			"every update needs the scopes of those events; without them, only turning those events off or disabling the webhook works. "+
 			"all_domains needs the webhooks:write:all scope; a connection limited to some domains can only "+
 			"list them in domains. "+
 			"The signing secret cannot change. The result is the changed webhook.",
@@ -286,30 +289,52 @@ func getAccount(ctx context.Context, env *toolEnv, _ struct{}) (accountOutput, e
 
 // webhookEvents are the events a webhook sends.
 type webhookEvents struct {
-	OnReception          bool `json:"on_reception" jsonschema:"AhaSend accepted a message and queued it for delivery."`
-	OnDelivered          bool `json:"on_delivered" jsonschema:"Message delivered."`
-	OnTransientError     bool `json:"on_transient_error" jsonschema:"Delivery deferred; it is retried later."`
-	OnFailed             bool `json:"on_failed" jsonschema:"Delivery failed after repeated attempts; no more retries."`
-	OnBounced            bool `json:"on_bounced" jsonschema:"The receiving server sent a bounce, also possible after delivery."`
-	OnSuppressed         bool `json:"on_suppressed" jsonschema:"Message not sent to a suppressed recipient."`
-	OnOpened             bool `json:"on_opened" jsonschema:"Message opened."`
-	OnClicked            bool `json:"on_clicked" jsonschema:"A tracked link was clicked."`
-	OnSuppressionCreated bool `json:"on_suppression_created" jsonschema:"A recipient was suppressed, such as after a bounce, failed deliveries or a spam report."`
-	OnDNSError           bool `json:"on_dns_error" jsonschema:"A DNS problem was found on a sending domain."`
+	OnReception              bool `json:"on_reception" jsonschema:"AhaSend accepted a message and queued it for delivery."`
+	OnDelivered              bool `json:"on_delivered" jsonschema:"Message delivered."`
+	OnTransientError         bool `json:"on_transient_error" jsonschema:"Delivery deferred; it is retried later."`
+	OnFailed                 bool `json:"on_failed" jsonschema:"Delivery failed after repeated attempts; no more retries."`
+	OnBounced                bool `json:"on_bounced" jsonschema:"The receiving server sent a bounce, also possible after delivery."`
+	OnSuppressed             bool `json:"on_suppressed" jsonschema:"Message not sent to a suppressed recipient."`
+	OnOpened                 bool `json:"on_opened" jsonschema:"Message opened."`
+	OnClicked                bool `json:"on_clicked" jsonschema:"A tracked link was clicked."`
+	OnSuppressionCreated     bool `json:"on_suppression_created" jsonschema:"suppression.created: a recipient was suppressed, such as after a bounce, a spam report, a transactional unsubscribe or an API call."`
+	OnDNSError               bool `json:"on_dns_error" jsonschema:"A DNS problem was found on a sending domain."`
+	OnUnsubscribed           bool `json:"on_unsubscribed" jsonschema:"message.unsubscribed: a recipient unsubscribed through a campaign email's link or one-click unsubscribe."`
+	OnComplained             bool `json:"on_complained" jsonschema:"message.complained: a mailbox provider reported a campaign email as spam."`
+	OnSuppressionDeleted     bool `json:"on_suppression_deleted" jsonschema:"suppression.deleted: a suppression was deleted through the API or the dashboard, or by AhaSend; deleting all suppressions at once and the removal of expired ones send none."`
+	OnContactCreated         bool `json:"on_contact_created" jsonschema:"contact.created: a contact was created through the API or the dashboard; CSV imports send no contact events. Contact events need the contacts:read scope."`
+	OnContactUpdated         bool `json:"on_contact_updated" jsonschema:"contact.updated: a contact's email, name, status or attributes changed. Needs contacts:read."`
+	OnContactDeleted         bool `json:"on_contact_deleted" jsonschema:"contact.deleted: a contact was deleted. Needs contacts:read."`
+	OnContactAddedToList     bool `json:"on_contact_added_to_list" jsonschema:"contact.added_to_list: a contact was added to a list; CSV imports send none. Needs contacts:read and lists:read."`
+	OnContactRemovedFromList bool `json:"on_contact_removed_from_list" jsonschema:"contact.removed_from_list: a contact was removed from a list. Needs contacts:read and lists:read."`
+	OnContactSubscribed      bool `json:"on_contact_subscribed" jsonschema:"contact.subscribed: a list membership became confirmed, or the contact's unsubscribe from all lists was cleared. Needs contacts:read and lists:read."`
+	OnContactUnsubscribed    bool `json:"on_contact_unsubscribed" jsonschema:"contact.unsubscribed: a list membership became unsubscribed, or the contact unsubscribed from all lists. Needs contacts:read and lists:read."`
+	OnContactComplained      bool `json:"on_contact_complained" jsonschema:"contact.complained: a contact reported a campaign email as spam. Needs contacts:read and lists:read."`
 }
 
 // webhookEventChanges are event changes; a missing event keeps its setting.
 type webhookEventChanges struct {
-	OnReception          *bool `json:"on_reception,omitempty" jsonschema:"AhaSend accepted a message and queued it for delivery."`
-	OnDelivered          *bool `json:"on_delivered,omitempty" jsonschema:"Message delivered."`
-	OnTransientError     *bool `json:"on_transient_error,omitempty" jsonschema:"Delivery deferred; it is retried later."`
-	OnFailed             *bool `json:"on_failed,omitempty" jsonschema:"Delivery failed after repeated attempts; no more retries."`
-	OnBounced            *bool `json:"on_bounced,omitempty" jsonschema:"The receiving server sent a bounce, also possible after delivery."`
-	OnSuppressed         *bool `json:"on_suppressed,omitempty" jsonschema:"Message not sent to a suppressed recipient."`
-	OnOpened             *bool `json:"on_opened,omitempty" jsonschema:"Message opened."`
-	OnClicked            *bool `json:"on_clicked,omitempty" jsonschema:"A tracked link was clicked."`
-	OnSuppressionCreated *bool `json:"on_suppression_created,omitempty" jsonschema:"A recipient was suppressed, such as after a bounce, failed deliveries or a spam report."`
-	OnDNSError           *bool `json:"on_dns_error,omitempty" jsonschema:"A DNS problem was found on a sending domain."`
+	OnReception              *bool `json:"on_reception,omitempty" jsonschema:"AhaSend accepted a message and queued it for delivery."`
+	OnDelivered              *bool `json:"on_delivered,omitempty" jsonschema:"Message delivered."`
+	OnTransientError         *bool `json:"on_transient_error,omitempty" jsonschema:"Delivery deferred; it is retried later."`
+	OnFailed                 *bool `json:"on_failed,omitempty" jsonschema:"Delivery failed after repeated attempts; no more retries."`
+	OnBounced                *bool `json:"on_bounced,omitempty" jsonschema:"The receiving server sent a bounce, also possible after delivery."`
+	OnSuppressed             *bool `json:"on_suppressed,omitempty" jsonschema:"Message not sent to a suppressed recipient."`
+	OnOpened                 *bool `json:"on_opened,omitempty" jsonschema:"Message opened."`
+	OnClicked                *bool `json:"on_clicked,omitempty" jsonschema:"A tracked link was clicked."`
+	OnSuppressionCreated     *bool `json:"on_suppression_created,omitempty" jsonschema:"suppression.created: a recipient was suppressed, such as after a bounce, a spam report, a transactional unsubscribe or an API call."`
+	OnDNSError               *bool `json:"on_dns_error,omitempty" jsonschema:"A DNS problem was found on a sending domain."`
+	OnUnsubscribed           *bool `json:"on_unsubscribed,omitempty" jsonschema:"message.unsubscribed: a recipient unsubscribed through a campaign email's link or one-click unsubscribe."`
+	OnComplained             *bool `json:"on_complained,omitempty" jsonschema:"message.complained: a mailbox provider reported a campaign email as spam."`
+	OnSuppressionDeleted     *bool `json:"on_suppression_deleted,omitempty" jsonschema:"suppression.deleted: a suppression was deleted through the API or the dashboard, or by AhaSend; deleting all suppressions at once and the removal of expired ones send none."`
+	OnContactCreated         *bool `json:"on_contact_created,omitempty" jsonschema:"contact.created: a contact was created through the API or the dashboard; CSV imports send no contact events. Contact events need the contacts:read scope."`
+	OnContactUpdated         *bool `json:"on_contact_updated,omitempty" jsonschema:"contact.updated: a contact's email, name, status or attributes changed. Needs contacts:read."`
+	OnContactDeleted         *bool `json:"on_contact_deleted,omitempty" jsonschema:"contact.deleted: a contact was deleted. Needs contacts:read."`
+	OnContactAddedToList     *bool `json:"on_contact_added_to_list,omitempty" jsonschema:"contact.added_to_list: a contact was added to a list; CSV imports send none. Needs contacts:read and lists:read."`
+	OnContactRemovedFromList *bool `json:"on_contact_removed_from_list,omitempty" jsonschema:"contact.removed_from_list: a contact was removed from a list. Needs contacts:read and lists:read."`
+	OnContactSubscribed      *bool `json:"on_contact_subscribed,omitempty" jsonschema:"contact.subscribed: a list membership became confirmed, or the contact's unsubscribe from all lists was cleared. Needs contacts:read and lists:read."`
+	OnContactUnsubscribed    *bool `json:"on_contact_unsubscribed,omitempty" jsonschema:"contact.unsubscribed: a list membership became unsubscribed, or the contact unsubscribed from all lists. Needs contacts:read and lists:read."`
+	OnContactComplained      *bool `json:"on_contact_complained,omitempty" jsonschema:"contact.complained: a contact reported a campaign email as spam. Needs contacts:read and lists:read."`
 }
 
 type webhookOutput struct {
@@ -320,6 +345,7 @@ type webhookOutput struct {
 	webhookEvents
 	Scope                  string     `json:"scope" jsonschema:"global for every sending domain, scoped for the domains listed."`
 	Domains                []string   `json:"domains,omitempty" jsonschema:"The domains a scoped webhook covers."`
+	Origins                []string   `json:"origins" jsonschema:"Origins whose contact and suppression events it gets: recipient, api, dashboard or system; null for every origin."`
 	SuccessCount           uint64     `json:"success_count" jsonschema:"Posts that succeeded."`
 	ErrorCount             uint64     `json:"error_count" jsonschema:"Posts that failed."`
 	ErrorsSinceLastSuccess int        `json:"errors_since_last_success" jsonschema:"Failed posts since the last success."`
@@ -335,17 +361,29 @@ func webhookFrom(w *responses.Webhook) webhookOutput {
 		URL:     w.URL,
 		Enabled: w.Enabled,
 		webhookEvents: webhookEvents{
-			OnReception:          w.OnReception,
-			OnDelivered:          w.OnDelivered,
-			OnTransientError:     w.OnTransientError,
-			OnFailed:             w.OnFailed,
-			OnBounced:            w.OnBounced,
-			OnSuppressed:         w.OnSuppressed,
-			OnOpened:             w.OnOpened,
-			OnClicked:            w.OnClicked,
-			OnSuppressionCreated: w.OnSuppressionCreated,
-			OnDNSError:           w.OnDNSError,
+			OnReception:              w.OnReception,
+			OnDelivered:              w.OnDelivered,
+			OnTransientError:         w.OnTransientError,
+			OnFailed:                 w.OnFailed,
+			OnBounced:                w.OnBounced,
+			OnSuppressed:             w.OnSuppressed,
+			OnOpened:                 w.OnOpened,
+			OnClicked:                w.OnClicked,
+			OnSuppressionCreated:     w.OnSuppressionCreated,
+			OnDNSError:               w.OnDNSError,
+			OnUnsubscribed:           w.OnUnsubscribed,
+			OnComplained:             w.OnComplained,
+			OnSuppressionDeleted:     w.OnSuppressionDeleted,
+			OnContactCreated:         w.OnContactCreated,
+			OnContactUpdated:         w.OnContactUpdated,
+			OnContactDeleted:         w.OnContactDeleted,
+			OnContactAddedToList:     w.OnContactAddedToList,
+			OnContactRemovedFromList: w.OnContactRemovedFromList,
+			OnContactSubscribed:      w.OnContactSubscribed,
+			OnContactUnsubscribed:    w.OnContactUnsubscribed,
+			OnContactComplained:      w.OnContactComplained,
 		},
+		Origins:                w.Origins,
 		Scope:                  w.Scope,
 		Domains:                w.Domains,
 		SuccessCount:           w.SuccessCount,
@@ -411,26 +449,42 @@ type createWebhookInput struct {
 	URL     string   `json:"url" jsonschema:"URL to post the events to."`
 	Enabled *bool    `json:"enabled,omitempty" jsonschema:"false to create it disabled. Default true."`
 	Domains []string `json:"domains,omitempty" jsonschema:"Sending domains whose events it posts; omit for every domain, which needs the webhooks:write:all scope."`
+	Origins []string `json:"origins,omitempty" jsonschema:"Origins whose contact and suppression events it gets: recipient (an unsubscribe link, a one-click unsubscribe or a spam complaint), api (writes through the AhaSend API, including this connection's tools), dashboard (the AhaSend dashboard), system (AhaSend itself, such as after a bounce). Message and DNS events ignore it. Omit for every origin. Leave out api when the app writes contacts back through the API, or each write comes back as an event."`
 	webhookEventChanges
 }
 
 func createWebhook(ctx context.Context, env *toolEnv, in createWebhookInput) (webhookOutput, error) {
+	if err := checkWebhookOrigins(in.Origins, "leave it out for every origin."); err != nil {
+		return webhookOutput{}, err
+	}
 	e := in.webhookEventChanges
 	req := requests.CreateWebhookRequest{
-		Name:                 in.Name,
-		URL:                  in.URL,
-		Enabled:              in.Enabled,
-		OnReception:          deref(e.OnReception),
-		OnDelivered:          deref(e.OnDelivered),
-		OnTransientError:     deref(e.OnTransientError),
-		OnFailed:             deref(e.OnFailed),
-		OnBounced:            deref(e.OnBounced),
-		OnSuppressed:         deref(e.OnSuppressed),
-		OnOpened:             deref(e.OnOpened),
-		OnClicked:            deref(e.OnClicked),
-		OnSuppressionCreated: deref(e.OnSuppressionCreated),
-		OnDnsError:           deref(e.OnDNSError),
-		Scope:                "global",
+		Name:                     in.Name,
+		URL:                      in.URL,
+		Enabled:                  in.Enabled,
+		OnReception:              deref(e.OnReception),
+		OnDelivered:              deref(e.OnDelivered),
+		OnTransientError:         deref(e.OnTransientError),
+		OnFailed:                 deref(e.OnFailed),
+		OnBounced:                deref(e.OnBounced),
+		OnSuppressed:             deref(e.OnSuppressed),
+		OnOpened:                 deref(e.OnOpened),
+		OnClicked:                deref(e.OnClicked),
+		OnSuppressionCreated:     deref(e.OnSuppressionCreated),
+		OnDnsError:               deref(e.OnDNSError),
+		OnUnsubscribed:           deref(e.OnUnsubscribed),
+		OnComplained:             deref(e.OnComplained),
+		OnSuppressionDeleted:     deref(e.OnSuppressionDeleted),
+		OnContactCreated:         deref(e.OnContactCreated),
+		OnContactUpdated:         deref(e.OnContactUpdated),
+		OnContactDeleted:         deref(e.OnContactDeleted),
+		OnContactAddedToList:     deref(e.OnContactAddedToList),
+		OnContactRemovedFromList: deref(e.OnContactRemovedFromList),
+		OnContactSubscribed:      deref(e.OnContactSubscribed),
+		OnContactUnsubscribed:    deref(e.OnContactUnsubscribed),
+		OnContactComplained:      deref(e.OnContactComplained),
+		Origins:                  in.Origins,
+		Scope:                    "global",
 	}
 	if len(in.Domains) > 0 {
 		req.Scope = "scoped"
@@ -450,6 +504,7 @@ type updateWebhookInput struct {
 	Enabled    *bool    `json:"enabled,omitempty" jsonschema:"true to enable, false to disable."`
 	Domains    []string `json:"domains,omitempty" jsonschema:"Limit the webhook to these sending domains. Not with all_domains."`
 	AllDomains bool     `json:"all_domains,omitempty" jsonschema:"True to post events of every sending domain; needs the webhooks:write:all scope. Not with domains."`
+	Origins    []string `json:"origins,omitempty" jsonschema:"Replaces the origins whose contact and suppression events it gets: recipient (an unsubscribe link, a one-click unsubscribe or a spam complaint), api (writes through the AhaSend API, including this connection's tools), dashboard (the AhaSend dashboard), system (AhaSend itself, such as after a bounce). Message and DNS events ignore it. Omit to keep them; give all four for every origin."`
 	webhookEventChanges
 }
 
@@ -461,21 +516,36 @@ func updateWebhook(ctx context.Context, env *toolEnv, in updateWebhookInput) (we
 	if in.AllDomains && len(in.Domains) > 0 {
 		return webhookOutput{}, invalidInput("Give domains or all_domains, not both.")
 	}
+	if err := checkWebhookOrigins(in.Origins, "give all four for every origin, or leave it out to keep the current ones."); err != nil {
+		return webhookOutput{}, err
+	}
 	e := in.webhookEventChanges
 	req := requests.UpdateWebhookRequest{
-		Name:                 optionalString(in.Name),
-		URL:                  optionalString(in.URL),
-		Enabled:              in.Enabled,
-		OnReception:          e.OnReception,
-		OnDelivered:          e.OnDelivered,
-		OnTransientError:     e.OnTransientError,
-		OnFailed:             e.OnFailed,
-		OnBounced:            e.OnBounced,
-		OnSuppressed:         e.OnSuppressed,
-		OnOpened:             e.OnOpened,
-		OnClicked:            e.OnClicked,
-		OnSuppressionCreated: e.OnSuppressionCreated,
-		OnDnsError:           e.OnDNSError,
+		Name:                     optionalString(in.Name),
+		URL:                      optionalString(in.URL),
+		Enabled:                  in.Enabled,
+		OnReception:              e.OnReception,
+		OnDelivered:              e.OnDelivered,
+		OnTransientError:         e.OnTransientError,
+		OnFailed:                 e.OnFailed,
+		OnBounced:                e.OnBounced,
+		OnSuppressed:             e.OnSuppressed,
+		OnOpened:                 e.OnOpened,
+		OnClicked:                e.OnClicked,
+		OnSuppressionCreated:     e.OnSuppressionCreated,
+		OnDnsError:               e.OnDNSError,
+		OnUnsubscribed:           e.OnUnsubscribed,
+		OnComplained:             e.OnComplained,
+		OnSuppressionDeleted:     e.OnSuppressionDeleted,
+		OnContactCreated:         e.OnContactCreated,
+		OnContactUpdated:         e.OnContactUpdated,
+		OnContactDeleted:         e.OnContactDeleted,
+		OnContactAddedToList:     e.OnContactAddedToList,
+		OnContactRemovedFromList: e.OnContactRemovedFromList,
+		OnContactSubscribed:      e.OnContactSubscribed,
+		OnContactUnsubscribed:    e.OnContactUnsubscribed,
+		OnContactComplained:      e.OnContactComplained,
+		Origins:                  in.Origins,
 	}
 	switch {
 	case in.AllDomains:
@@ -491,6 +561,27 @@ func updateWebhook(ctx context.Context, env *toolEnv, in updateWebhookInput) (we
 	out := webhookFrom(w)
 	out.Secret = ""
 	return out, nil
+}
+
+// checkWebhookOrigins refuses an origins list that the API refuses: an empty
+// one, which would turn the contact and suppression events off without
+// saying so, or one with an unknown origin. whenEmpty tells the caller what to
+// send instead.
+func checkWebhookOrigins(origins []string, whenEmpty string) error {
+	if origins == nil {
+		return nil
+	}
+	if len(origins) == 0 {
+		return invalidInput("origins needs at least one origin; %s", whenEmpty)
+	}
+	for _, o := range origins {
+		switch o {
+		case common.WebhookOriginRecipient, common.WebhookOriginAPI, common.WebhookOriginDashboard, common.WebhookOriginSystem:
+		default:
+			return invalidInput("Unknown origin %q; use recipient, api, dashboard or system.", o)
+		}
+	}
+	return nil
 }
 
 func deleteWebhook(ctx context.Context, env *toolEnv, in webhookIDInput) (confirmationOutput, error) {
