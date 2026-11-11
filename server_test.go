@@ -183,6 +183,7 @@ func TestListedToolsCarryTitlesAnnotationsAndSchemas(t *testing.T) {
 		assert.NotEmpty(t, tl.Title, tl.Name)
 		assert.NotEmpty(t, tl.Description, tl.Name)
 		require.NotNil(t, tl.Annotations, tl.Name)
+		assert.Equal(t, tl.Title, tl.Annotations.Title, tl.Name)
 		assert.NotNil(t, tl.Annotations.DestructiveHint, tl.Name)
 		assert.NotNil(t, tl.Annotations.OpenWorldHint, tl.Name)
 		assert.NotNil(t, tl.InputSchema, tl.Name)

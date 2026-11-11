@@ -94,7 +94,10 @@ func (t tool) mcpTool(env *toolEnv) *mcp.Tool {
 	if t.describe != nil {
 		description = t.describe(env)
 	}
+	// The title goes in both places: clients and directories read it from
+	// the tool or from its annotations.
 	annotations := t.info.Annotations
+	annotations.Title = t.info.Title
 	return &mcp.Tool{
 		Name:        t.info.Name,
 		Title:       t.info.Title,
