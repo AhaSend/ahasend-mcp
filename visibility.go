@@ -21,7 +21,13 @@ var scopeFamilies = []string{
 	"smtp-credentials:read",
 	"smtp-credentials:write",
 	"smtp-credentials:delete",
-	"statistics-transactional:read",
+	"statistics:read",
+}
+
+// earlierFamilyNames maps each earlier name of a scope family to its current
+// name. The API accepts both names, and they give the same access.
+var earlierFamilyNames = map[string]string{
+	"statistics-transactional:read": "statistics:read",
 }
 
 func isScopeFamily(scope string) bool {
@@ -30,18 +36,34 @@ func isScopeFamily(scope string) bool {
 
 // hasScope reports whether scopes meet the required scope. A static scope
 // is met only by itself; a scope family by "<family>:all" or by
-// "<family>:{domain}".
+// "<family>:{domain}", under its current name or an earlier name.
 func hasScope(scopes []string, required string) bool {
 	family := isScopeFamily(required)
 	for _, s := range scopes {
 		if s == required && !family {
 			return true
 		}
-		if family && (s == required+":all" || strings.HasPrefix(s, required+":{")) {
+		if family && currentFamily(s) == required {
 			return true
 		}
 	}
 	return false
+}
+
+// currentFamily returns the current name of the family of a scope in the form
+// "<family>:all" or "<family>:{domain}", and "" for a scope in neither form.
+func currentFamily(scope string) string {
+	family, _, found := strings.Cut(scope, ":{")
+	if !found {
+		family, found = strings.CutSuffix(scope, ":all")
+	}
+	if !found {
+		return ""
+	}
+	if current, ok := earlierFamilyNames[family]; ok {
+		return current
+	}
+	return family
 }
 
 // visible reports whether a tool is listed for these options: the key meets
