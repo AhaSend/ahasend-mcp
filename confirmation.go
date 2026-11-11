@@ -643,12 +643,10 @@ func stateMAC(key []byte, payload string) []byte {
 }
 
 // campaignIssuesError refuses a campaign that is not ready to send, with
-// the issues to fix first.
+// its issues.
 func campaignIssuesError(issues []responses.CampaignIssue) error {
 	var b strings.Builder
-	b.WriteString("The campaign is not ready to send, so the user was not asked. Fix these first:")
-	for _, issue := range issues {
-		fmt.Fprintf(&b, " %s (%s).", strings.TrimRight(issue.Message, ". "), issue.Code)
-	}
+	b.WriteString("The campaign is not ready to send, so the user was not asked.")
+	writeCampaignIssues(&b, issues)
 	return &toolError{kind: ErrorKindInvalidInput, message: b.String()}
 }

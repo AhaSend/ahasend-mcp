@@ -214,7 +214,7 @@ func campaignSummaryFrom(c *responses.CampaignListItem) campaignSummary {
 
 // campaignIssue is a reason a draft cannot be sent yet.
 type campaignIssue struct {
-	Code    string `json:"code" jsonschema:"sender_missing, lists_missing, subject_missing, preheader_missing, design_missing, text_broken or unsubscribe_link_missing."`
+	Code    string `json:"code" jsonschema:"sender_missing, lists_missing, subject_missing, preheader_missing, design_missing, text_broken, text_unchecked or unsubscribe_link_missing. text_unchecked means the text could not be checked right now; a later call checks it again."`
 	Message string `json:"message" jsonschema:"What to do about it."`
 }
 
@@ -514,11 +514,35 @@ func campaignNotReadyError(err error) error {
 		return err
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "AhaSend refused the request (HTTP 400): %s. Fix these first:", strings.TrimRight(notReady.Message, ". "))
-	for _, issue := range notReady.Issues {
-		fmt.Fprintf(&b, " %s (%s).", strings.TrimRight(issue.Message, ". "), issue.Code)
-	}
+	fmt.Fprintf(&b, "AhaSend refused the request (HTTP 400): %s.", strings.TrimRight(notReady.Message, ". "))
+	writeCampaignIssues(&b, notReady.Issues)
 	return &toolError{kind: ErrorKindAPI4xx, message: b.String()}
+}
+
+// writeCampaignIssues writes the issues that keep a campaign from being
+// sent: the ones to fix first, then text_unchecked, which needs a new call and no fix.
+func writeCampaignIssues(b *strings.Builder, issues []responses.CampaignIssue) {
+	var fix, unchecked []responses.CampaignIssue
+	for _, issue := range issues {
+		if issue.Code == responses.CampaignIssueTextUnchecked {
+			unchecked = append(unchecked, issue)
+		} else {
+			fix = append(fix, issue)
+		}
+	}
+	if len(fix) > 0 {
+		b.WriteString(" Fix these first:")
+		for _, issue := range fix {
+			fmt.Fprintf(b, " %s (%s).", strings.TrimRight(issue.Message, ". "), issue.Code)
+		}
+	}
+	again := "this needs no fix, so the call can be made again"
+	if len(fix) > 0 {
+		again = "this needs no fix; make the call again after the fixes above"
+	}
+	for _, issue := range unchecked {
+		fmt.Fprintf(b, " %s (%s): %s.", strings.TrimRight(issue.Message, ". "), issue.Code, again)
+	}
 }
 
 func unscheduleCampaign(ctx context.Context, env *toolEnv, in campaignIDInput) (campaignResult, error) {
@@ -624,6 +648,7 @@ type campaignRecipient struct {
 	BounceReason         string    `json:"bounce_reason,omitempty" jsonschema:"Bounce reason."`
 	BounceMessage        string    `json:"bounce_message,omitempty" jsonschema:"The receiving server's bounce message."`
 	Attempts             int       `json:"attempts" jsonschema:"Delivery attempts."`
+	CreatedAt            time.Time `json:"created_at" jsonschema:"When the recipient was added to the send."`
 	UpdatedAt            time.Time `json:"updated_at" jsonschema:"When the recipient last changed."`
 }
 
@@ -665,6 +690,7 @@ func listCampaignRecipients(ctx context.Context, env *toolEnv, in listCampaignRe
 			BounceReason:         deref(r.BounceReason),
 			BounceMessage:        deref(r.BounceMessage),
 			Attempts:             r.Attempts,
+			CreatedAt:            r.CreatedAt,
 			UpdatedAt:            r.UpdatedAt,
 		}
 		if r.SegmentID != nil {

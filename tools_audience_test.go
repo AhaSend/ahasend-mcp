@@ -210,3 +210,99 @@ func TestAddContactsToListReturnsEachMembershipStatus(t *testing.T) {
 	assert.Equal(t, "already_member", field(t, out, "results.1.outcome"))
 	assert.Equal(t, "unsubscribed", field(t, out, "results.1.subscription_status"))
 }
+
+func TestUpsertContactsReturnsEachContact(t *testing.T) {
+	runToolCases(t, []toolCase{{
+		tool:   "upsert_contacts",
+		args:   map[string]any{"contacts": []map[string]any{{"email": "ann@example.org"}, {"email": "not-an-address"}}},
+		method: http.MethodPost, path: "/contacts/batch",
+		resp: map[string]any{
+			"object": "list", "created": 1, "updated": 0, "failed": 1,
+			"data": []map[string]any{
+				{"position": 0, "email": "ann@example.org", "outcome": "created", "contact": contactJSON()},
+				{"position": 1, "email": "not-an-address", "outcome": "failed", "reason": "invalid email"},
+			},
+		},
+		wantBody: map[string]any{"data": []any{
+			map[string]any{"email": "ann@example.org"},
+			map[string]any{"email": "not-an-address"},
+		}},
+		check: func(t *testing.T, out map[string]any) {
+			assert.Equal(t, testContactID, field(t, out, "results.0.contact.id"))
+			assert.Equal(t, "Ann", field(t, out, "results.0.contact.first_name"))
+			assert.Equal(t, "enabled", field(t, out, "results.0.contact.status"))
+			assert.Equal(t, "valid", field(t, out, "results.0.contact.validation_status"))
+			assert.Equal(t, "pro", field(t, out, "results.0.contact.attributes.plan"))
+			assert.Equal(t, fixtureTime, field(t, out, "results.0.contact.updated_at"))
+			assert.NotContains(t, field(t, out, "results.1"), "contact")
+		},
+	}})
+}
+
+func TestAddContactsToListReturnsEachMembership(t *testing.T) {
+	membership := membershipJSON()
+	delete(membership, "list") // a batch result's membership carries no list
+	membership["updated_at"] = "2026-10-03T08:00:00Z"
+	runToolCases(t, []toolCase{{
+		tool:   "add_contacts_to_list",
+		args:   map[string]any{"list_id": testListID, "contacts": []string{"ann@example.org", "bob@example.org"}},
+		method: http.MethodPost, path: "/lists/" + testListID + "/contacts/batch",
+		resp: map[string]any{
+			"object": "list", "added": 1, "skipped": 0, "failed": 1,
+			"data": []map[string]any{
+				{"position": 0, "email": "ann@example.org", "outcome": "added", "membership": membership},
+				{"position": 1, "email": "bob@example.org", "outcome": "not_found", "reason": "contact not found"},
+			},
+		},
+		wantBody: map[string]any{"data": []any{
+			map[string]any{"email": "ann@example.org"},
+			map[string]any{"email": "bob@example.org"},
+		}},
+		check: func(t *testing.T, out map[string]any) {
+			assert.Equal(t, testListID, field(t, out, "results.0.membership.list_id"))
+			assert.Equal(t, testContactID, field(t, out, "results.0.membership.contact_id"))
+			assert.Equal(t, "ann@example.org", field(t, out, "results.0.membership.email"))
+			assert.Equal(t, "confirmed", field(t, out, "results.0.membership.subscription_status"))
+			assert.Equal(t, fixtureTime, field(t, out, "results.0.membership.subscribed_at"))
+			assert.Equal(t, fixtureTime, field(t, out, "results.0.membership.created_at"))
+			assert.Equal(t, "2026-10-03T08:00:00Z", field(t, out, "results.0.membership.updated_at"))
+			assert.NotContains(t, field(t, out, "results.0.membership"), "list_name")
+			assert.NotContains(t, field(t, out, "results.1"), "membership")
+		},
+	}})
+}
+
+func TestMembershipOutputHasItsUpdateTimeAndTheListDetails(t *testing.T) {
+	membership := membershipJSON()
+	membership["updated_at"] = "2026-10-03T08:00:00Z"
+	membership["list"].(map[string]any)["description"] = "Monthly news"
+	membership["list"].(map[string]any)["tags"] = []string{"news", "monthly"}
+	runToolCases(t, []toolCase{
+		{
+			tool: "list_contact_lists", args: map[string]any{"contact": "ann@example.org"},
+			method: http.MethodGet, path: "/contacts/ann@example.org/lists", resp: page(membership),
+			check: func(t *testing.T, out map[string]any) {
+				assert.Equal(t, "2026-10-03T08:00:00Z", field(t, out, "memberships.0.updated_at"))
+				assert.Equal(t, "Monthly news", field(t, out, "memberships.0.list_description"))
+				assert.Equal(t, []any{"news", "monthly"}, field(t, out, "memberships.0.list_tags"))
+			},
+		},
+		{
+			tool:   "upsert_list_contact",
+			args:   map[string]any{"list_id": testListID, "contact": "ann@example.org"},
+			method: http.MethodPut, path: "/lists/" + testListID + "/contacts/ann@example.org",
+			resp: func() map[string]any {
+				m := membershipJSON()
+				delete(m, "list")
+				m["updated_at"] = "2026-10-03T08:00:00Z"
+				return m
+			}(),
+			wantBody: map[string]any{},
+			check: func(t *testing.T, out map[string]any) {
+				assert.Equal(t, "2026-10-03T08:00:00Z", out["updated_at"])
+				assert.NotContains(t, out, "list_description")
+				assert.NotContains(t, out, "list_tags")
+			},
+		},
+	})
+}

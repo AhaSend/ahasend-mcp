@@ -69,6 +69,7 @@ type suppressionInfo struct {
 	Email     string    `json:"email" jsonschema:"Suppressed address."`
 	Domain    string    `json:"domain,omitempty" jsonschema:"Sender domain the suppression applies to; empty for every domain."`
 	Reason    string    `json:"reason,omitempty" jsonschema:"Why the address is suppressed."`
+	Protected bool      `json:"protected" jsonschema:"True when the recipient chose it, by unsubscribing or reporting spam."`
 	CreatedAt time.Time `json:"created_at" jsonschema:"When the suppression was made."`
 	ExpiresAt time.Time `json:"expires_at" jsonschema:"When the suppression ends."`
 }
@@ -263,6 +264,7 @@ func checkSuppressions(ctx context.Context, env *toolEnv, email string) ([]suppr
 			Email:     s.Email,
 			Domain:    s.Domain,
 			Reason:    s.Reason,
+			Protected: s.Protected,
 			CreatedAt: s.CreatedAt,
 			ExpiresAt: s.ExpiresAt,
 		})

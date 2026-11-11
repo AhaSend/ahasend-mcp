@@ -116,3 +116,105 @@ func TestDeleteDomain(t *testing.T) {
 	assert.Equal(t, apiPath("/domains/mail.example.com"), req.Path)
 	assert.Equal(t, "Domain deleted", out.Message)
 }
+
+func TestAddDomainSendsTheDKIMSelectorWhenGiven(t *testing.T) {
+	tests := []struct {
+		name string
+		args map[string]any
+		want map[string]any
+	}{
+		{"not given", map[string]any{}, map[string]any{"domain": "mail.example.com"}},
+		{"empty", map[string]any{"dkim_selector": ""}, map[string]any{"domain": "mail.example.com"}},
+		{"a value", map[string]any{"dkim_selector": "os"}, map[string]any{"domain": "mail.example.com", "dkim_selector": "os"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := map[string]any{"domain": "mail.example.com"}
+			for k, v := range tt.args {
+				args[k] = v
+			}
+			runToolCases(t, []toolCase{{
+				tool: "add_domain", args: args,
+				method: http.MethodPost, path: "/domains", status: http.StatusCreated, resp: domainJSON("mail.example.com"),
+				wantBody: tt.want,
+			}})
+		})
+	}
+}
+
+func TestUpdateDomainSetsOrClearsTheDKIMSelector(t *testing.T) {
+	tests := []struct {
+		name string
+		args map[string]any
+		want map[string]any
+	}{
+		{"not given", map[string]any{"tracking_subdomain": "click"}, map[string]any{"tracking_subdomain": "click"}},
+		{"empty clears it", map[string]any{"dkim_selector": ""}, map[string]any{"dkim_selector": ""}},
+		{"a value", map[string]any{"dkim_selector": "os"}, map[string]any{"dkim_selector": "os"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := map[string]any{"domain": "mail.example.com"}
+			for k, v := range tt.args {
+				args[k] = v
+			}
+			runToolCases(t, []toolCase{{
+				tool: "update_domain", args: args,
+				method: http.MethodPut, path: "/domains/mail.example.com", resp: domainJSON("mail.example.com"),
+				wantBody: tt.want,
+			}})
+		})
+	}
+}
+
+// domainStateJSON is a paused domain with a custom DKIM selector, a ready
+// standby key and a DSN recipient.
+func domainStateJSON() map[string]any {
+	d := domainJSON("mail.example.com")
+	d["updated_at"] = "2026-09-15T08:30:00Z"
+	d["dkim_selector"] = "os"
+	d["rotation_ready"] = true
+	d["dsn_recipient"] = "dsn@example.com"
+	d["paused"] = true
+	d["paused_at"] = "2026-09-20T12:00:00Z"
+	d["pause_reason"] = "bounce_rate"
+	return d
+}
+
+func TestDomainOutputsHaveTheDomainState(t *testing.T) {
+	runToolCases(t, []toolCase{
+		{
+			tool: "get_domain", args: map[string]any{"domain": "mail.example.com"},
+			method: http.MethodGet, path: "/domains/mail.example.com", resp: domainStateJSON(),
+			check: func(t *testing.T, out map[string]any) {
+				assert.Equal(t, "os", out["dkim_selector"])
+				assert.Equal(t, true, out["rotation_ready"])
+				assert.Equal(t, "dsn@example.com", out["dsn_recipient"])
+				assert.Equal(t, "2026-09-20T12:00:00Z", out["paused_at"])
+				assert.Equal(t, "2026-09-15T08:30:00Z", out["updated_at"])
+			},
+		},
+		{
+			tool: "list_domains", args: map[string]any{},
+			method: http.MethodGet, path: "/domains", resp: page(domainStateJSON()),
+			check: func(t *testing.T, out map[string]any) {
+				assert.Equal(t, "2026-09-20T12:00:00Z", field(t, out, "domains.0.paused_at"))
+				assert.Equal(t, "2026-09-15T08:30:00Z", field(t, out, "domains.0.updated_at"))
+				assert.NotContains(t, field(t, out, "domains.0"), "dkim_selector", "list results hold no settings")
+			},
+		},
+	})
+}
+
+func TestDomainOutputLeavesOutUnsetState(t *testing.T) {
+	runToolCases(t, []toolCase{{
+		tool: "get_domain", args: map[string]any{"domain": "mail.example.com"},
+		method: http.MethodGet, path: "/domains/mail.example.com", resp: domainJSON("mail.example.com"),
+		check: func(t *testing.T, out map[string]any) {
+			assert.NotContains(t, out, "dkim_selector")
+			assert.NotContains(t, out, "dsn_recipient")
+			assert.NotContains(t, out, "paused_at")
+			assert.Equal(t, false, out["rotation_ready"])
+		},
+	}})
+}

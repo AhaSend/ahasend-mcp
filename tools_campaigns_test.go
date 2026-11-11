@@ -2,7 +2,9 @@ package ahasendmcp
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -268,4 +270,104 @@ func TestCampaignWritesRefuseAMalformedAudienceID(t *testing.T) {
 
 	assert.Contains(t, text, "exclude_segment_ids must be an ID")
 	assert.Empty(t, f.calls())
+}
+
+func TestCampaignIssueErrorsSayTextUncheckedNeedsNoFix(t *testing.T) {
+	const alone = "(text_unchecked): this needs no fix, so the call can be made again."
+	const afterFixes = "(text_unchecked): this needs no fix; make the call again after the fixes above."
+	unchecked := map[string]any{"code": "text_unchecked", "message": "The design could not be checked right now. Try again in a moment."}
+	missing := map[string]any{"code": "subject_missing", "message": "Add a subject."}
+	tests := []struct {
+		name    string
+		issues  []map[string]any
+		want    []string
+		notWant []string
+	}{
+		{
+			name:    "text_unchecked alone",
+			issues:  []map[string]any{unchecked},
+			want:    []string{"The design could not be checked right now. Try again in a moment " + alone},
+			notWant: []string{"Fix these first"},
+		},
+		{
+			name:   "beside an issue to fix",
+			issues: []map[string]any{missing, unchecked},
+			want:   []string{"Fix these first: Add a subject (subject_missing). The design could not be checked right now. Try again in a moment " + afterFixes},
+		},
+		{
+			name:    "other issues only",
+			issues:  []map[string]any{missing},
+			want:    []string{"Fix these first: Add a subject (subject_missing)."},
+			notWant: []string{"text_unchecked", "needs no fix"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run("send_campaign_test "+tt.name, func(t *testing.T) {
+			f := newFakeAPI(t)
+			f.handle("POST "+apiPath("/campaigns/"+testCampaignID+"/test"), http.StatusBadRequest, map[string]any{
+				"message": "campaign is not ready to send", "issues": tt.issues,
+			})
+			cs := connect(t, testOptions(t, f))
+			text := requireToolError(t, callTool(t, cs, "send_campaign_test", map[string]any{"campaign_id": testCampaignID, "to": []string{"me@example.com"}}))
+			assert.True(t, strings.HasPrefix(text, "AhaSend refused the request (HTTP 400): campaign is not ready to send."), text)
+			for _, s := range tt.want {
+				assert.Contains(t, text, s)
+			}
+			for _, s := range tt.notWant {
+				assert.NotContains(t, text, s)
+			}
+		})
+		t.Run("send_campaign "+tt.name, func(t *testing.T) {
+			cf := newCampaignFake(t)
+			cf.set("ready", false)
+			cf.set("issues", tt.issues)
+			cs := connectWith(t, testOptions(t, cf.fakeAPI), manualClient(t), protocol20260728)
+			res := callTool(t, cs, toolSendCampaign, map[string]any{"campaign_id": testCampaignID})
+			text := requireToolError(t, res)
+			assert.True(t, strings.HasPrefix(text, "The campaign is not ready to send, so the user was not asked."), text)
+			for _, s := range tt.want {
+				assert.Contains(t, text, s)
+			}
+			for _, s := range tt.notWant {
+				assert.NotContains(t, text, s)
+			}
+			assert.Empty(t, res.InputRequests, "the user is not asked")
+			assert.Empty(t, cf.sends())
+		})
+	}
+}
+
+func TestCampaignIssueCodesNameTextUnchecked(t *testing.T) {
+	cs := connect(t, testOptions(t, newFakeAPI(t)))
+	res, err := cs.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	tools := map[string]bool{}
+	for _, tl := range res.Tools {
+		raw, err := json.Marshal(tl.OutputSchema)
+		require.NoError(t, err)
+		if strings.Contains(string(raw), "sender_missing, lists_missing") {
+			tools[tl.Name] = true
+			assert.Contains(t, string(raw), "text_broken, text_unchecked or unsubscribe_link_missing", tl.Name)
+		}
+	}
+	for _, tool := range []string{"get_campaign", "create_campaign", "update_campaign", "duplicate_campaign", "unschedule_campaign"} {
+		assert.True(t, tools[tool], "%s lists the issue codes", tool)
+	}
+}
+
+func TestListCampaignRecipientsReturnsWhenEachWasAdded(t *testing.T) {
+	runToolCases(t, []toolCase{{
+		tool:   "list_campaign_recipients",
+		args:   map[string]any{"campaign_id": testCampaignID, "status": "Delivered"},
+		method: http.MethodGet, path: "/campaigns/" + testCampaignID + "/recipients",
+		resp: page(map[string]any{
+			"object": "campaign_recipient", "contact_id": testContactID, "email": "ann@example.org",
+			"list_name": "Newsletter", "status": "Delivered", "attempts": 1,
+			"created_at": "2026-10-02T09:00:00Z", "updated_at": "2026-10-02T09:05:00Z",
+		}),
+		check: func(t *testing.T, out map[string]any) {
+			assert.Equal(t, "2026-10-02T09:00:00Z", field(t, out, "recipients.0.created_at"))
+			assert.Equal(t, "2026-10-02T09:05:00Z", field(t, out, "recipients.0.updated_at"))
+		},
+	}})
 }

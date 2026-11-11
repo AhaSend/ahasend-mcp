@@ -513,11 +513,23 @@ func subAccountJSON() map[string]any {
 // tool and property name.
 func inputProperties(t *testing.T, cs *mcp.ClientSession) map[string]map[string]string {
 	t.Helper()
+	return schemaProperties(t, cs, func(tl *mcp.Tool) any { return tl.InputSchema })
+}
+
+// outputProperties returns each listed tool's top-level output property
+// descriptions, by tool and property name.
+func outputProperties(t *testing.T, cs *mcp.ClientSession) map[string]map[string]string {
+	t.Helper()
+	return schemaProperties(t, cs, func(tl *mcp.Tool) any { return tl.OutputSchema })
+}
+
+func schemaProperties(t *testing.T, cs *mcp.ClientSession, schemaOf func(*mcp.Tool) any) map[string]map[string]string {
+	t.Helper()
 	res, err := cs.ListTools(context.Background(), nil)
 	require.NoError(t, err)
 	out := map[string]map[string]string{}
 	for _, tl := range res.Tools {
-		raw, err := json.Marshal(tl.InputSchema)
+		raw, err := json.Marshal(schemaOf(tl))
 		require.NoError(t, err)
 		var schema struct {
 			Properties map[string]struct {

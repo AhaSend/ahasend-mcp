@@ -89,6 +89,7 @@ func TestClearableFieldsSayAnEmptyValueClearsThem(t *testing.T) {
 		"update_campaign": {"subject", "preheader", "reply_to"},
 		"update_contact":  {"first_name", "last_name", "status_reason"},
 		"update_list":     {"description"},
+		"update_domain":   {"dkim_selector"},
 	}
 	schemas := inputProperties(t, cs)
 	for tool, fields := range want {
