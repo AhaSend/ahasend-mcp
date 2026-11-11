@@ -322,11 +322,12 @@ type upsertContactsInput struct {
 }
 
 type contactBatchResult struct {
-	Position  int    `json:"position" jsonschema:"Index of the entry in contacts, from 0."`
-	Email     string `json:"email" jsonschema:"The entry's email address."`
-	Outcome   string `json:"outcome" jsonschema:"created, updated or failed."`
-	ContactID string `json:"contact_id,omitempty" jsonschema:"The contact's ID, unless the entry failed."`
-	Reason    string `json:"reason,omitempty" jsonschema:"Why the entry failed."`
+	Position  int            `json:"position" jsonschema:"Index of the entry in contacts, from 0."`
+	Email     string         `json:"email" jsonschema:"The entry's email address."`
+	Outcome   string         `json:"outcome" jsonschema:"created, updated or failed."`
+	ContactID string         `json:"contact_id,omitempty" jsonschema:"The contact's ID, unless the entry failed."`
+	Contact   *contactOutput `json:"contact,omitempty" jsonschema:"The contact as stored, unless the entry failed."`
+	Reason    string         `json:"reason,omitempty" jsonschema:"Why the entry failed."`
 }
 
 type upsertContactsOutput struct {
@@ -363,6 +364,8 @@ func upsertContacts(ctx context.Context, env *toolEnv, in upsertContactsInput) (
 		result := contactBatchResult{Position: r.Position, Email: r.Email, Outcome: r.Outcome, Reason: r.Reason}
 		if r.Contact != nil {
 			result.ContactID = r.Contact.ID.String()
+			contact := contactFrom(r.Contact)
+			result.Contact = &contact
 		}
 		out.Results = append(out.Results, result)
 	}
@@ -416,12 +419,15 @@ func deleteContact(ctx context.Context, env *toolEnv, in contactRefInput) (confi
 type membershipOutput struct {
 	ListID             string     `json:"list_id" jsonschema:"List ID."`
 	ListName           string     `json:"list_name,omitempty" jsonschema:"List name."`
+	ListDescription    string     `json:"list_description,omitempty" jsonschema:"List description."`
+	ListTags           []string   `json:"list_tags,omitempty" jsonschema:"List tags."`
 	ContactID          string     `json:"contact_id" jsonschema:"Contact ID."`
 	Email              string     `json:"email" jsonschema:"The contact's email address."`
 	SubscriptionStatus string     `json:"subscription_status" jsonschema:"confirmed, unconfirmed, unsubscribed or complained (the recipient reported spam). Only confirmed members get campaigns."`
 	SubscribedAt       *time.Time `json:"subscribed_at,omitempty" jsonschema:"When the contact subscribed."`
 	UnsubscribedAt     *time.Time `json:"unsubscribed_at,omitempty" jsonschema:"When the contact unsubscribed."`
 	CreatedAt          time.Time  `json:"created_at" jsonschema:"When the contact was added to the list."`
+	UpdatedAt          time.Time  `json:"updated_at" jsonschema:"When the membership last changed."`
 }
 
 func membershipFrom(m *responses.ListContact) membershipOutput {
@@ -433,9 +439,12 @@ func membershipFrom(m *responses.ListContact) membershipOutput {
 		SubscribedAt:       m.SubscribedAt,
 		UnsubscribedAt:     m.UnsubscribedAt,
 		CreatedAt:          m.CreatedAt,
+		UpdatedAt:          m.UpdatedAt,
 	}
 	if m.List != nil {
 		out.ListName = m.List.Name
+		out.ListDescription = m.List.Description
+		out.ListTags = m.List.Tags
 	}
 	return out
 }
@@ -638,12 +647,13 @@ type addContactsToListInput struct {
 }
 
 type listBatchResult struct {
-	Position           int    `json:"position" jsonschema:"Index of the entry in contacts, from 0."`
-	Contact            string `json:"contact,omitempty" jsonschema:"The ID or email address the entry gave."`
-	Outcome            string `json:"outcome" jsonschema:"added, already_member, not_found or invalid."`
-	ContactID          string `json:"contact_id,omitempty" jsonschema:"The contact's ID, when the contact is on the list."`
-	SubscriptionStatus string `json:"subscription_status,omitempty" jsonschema:"The membership's status on the list, when the contact is on it; only confirmed members get campaigns."`
-	Reason             string `json:"reason,omitempty" jsonschema:"Why the entry failed."`
+	Position           int               `json:"position" jsonschema:"Index of the entry in contacts, from 0."`
+	Contact            string            `json:"contact,omitempty" jsonschema:"The ID or email address the entry gave."`
+	Outcome            string            `json:"outcome" jsonschema:"added, already_member, not_found or invalid."`
+	ContactID          string            `json:"contact_id,omitempty" jsonschema:"The contact's ID, when the contact is on the list."`
+	SubscriptionStatus string            `json:"subscription_status,omitempty" jsonschema:"The membership's status on the list, when the contact is on it; only confirmed members get campaigns."`
+	Membership         *membershipOutput `json:"membership,omitempty" jsonschema:"The membership as it stands, when the contact is on the list."`
+	Reason             string            `json:"reason,omitempty" jsonschema:"Why the entry failed."`
 }
 
 type addContactsToListOutput struct {
@@ -690,6 +700,8 @@ func addContactsToList(ctx context.Context, env *toolEnv, in addContactsToListIn
 		if r.Membership != nil {
 			result.ContactID = r.Membership.ContactID.String()
 			result.SubscriptionStatus = r.Membership.SubscriptionStatus
+			membership := membershipFrom(r.Membership)
+			result.Membership = &membership
 		}
 		out.Results = append(out.Results, result)
 	}

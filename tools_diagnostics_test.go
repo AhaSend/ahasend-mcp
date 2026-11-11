@@ -481,3 +481,79 @@ func TestGetEmailStatsDescriptionGivesEachCounter(t *testing.T) {
 	assert.Contains(t, emailStatsDescription, "billing counts the same messages")
 	assert.Contains(t, emailStatsDescription, "range that totals covers")
 }
+
+func TestGetEmailStatsReturnsThePeriodBreakdownAndHasMore(t *testing.T) {
+	tests := []struct {
+		name          string
+		args          map[string]any
+		resp          map[string]any
+		wantBreakdown any // nil: missing
+		wantHasMore   bool
+	}{
+		{"without a breakdown", map[string]any{"group_by": "week"}, emailStatsResponse("week", false, emailStatsRows(2, nil)), nil, false},
+		{"with a breakdown", map[string]any{"breakdown": "domain"}, emailStatsResponse("month", true, emailStatsRows(2, "mail.example.com")), "domain", true},
+		{"with too many rows", map[string]any{"breakdown": "domain"}, emailStatsResponse("hour", true, emailStatsRows(501, "mail.example.com")), "domain", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeAPI(t)
+			f.handle("GET "+apiPath("/statistics/emails"), http.StatusOK, tt.resp)
+			cs := connect(t, testOptions(t, f))
+
+			out := decode[map[string]any](t, callTool(t, cs, "get_email_stats", tt.args))
+
+			assert.Equal(t, tt.resp["group_by"], out["group_by"])
+			if tt.wantBreakdown == nil {
+				assert.NotContains(t, out, "breakdown")
+			} else {
+				assert.Equal(t, tt.wantBreakdown, out["breakdown"])
+			}
+			assert.Equal(t, tt.wantHasMore, out["has_more"])
+		})
+	}
+}
+
+func TestMessageToolsReturnTheMessageLinks(t *testing.T) {
+	const reportID = "7a6b5c4d-3e2f-4a1b-9c8d-7e6f5a4b3c2d"
+	msg := messageJSON(outboundMessageID, "outbound")
+	msg["updated_at"] = "2026-10-01T11:30:00Z"
+	msg["reference_message_id"] = 4242
+	msg["delivery_attempts"] = []map[string]any{
+		{"time": "2026-10-01T10:00:30Z", "log": "250 OK", "status": "Delivered"},
+		{"time": "2026-10-01T11:00:00Z", "log": "550 5.1.1 user unknown", "status": "Bounced", "report_message_id": reportID},
+	}
+	msg["content_parsed"] = map[string]any{
+		"parts": []map[string]any{{"content_type": "text/html", "content": `<img src="cid:logo@example.com">`}},
+		"attachments": []map[string]any{
+			{"filename": "logo.png", "content_type": "image/png", "content": "iVBORw==", "content_id": "logo@example.com"},
+			{"filename": "terms.pdf", "content_type": "application/pdf", "content": "JVBERg==", "content_id": ""},
+		},
+	}
+	f := newFakeAPI(t)
+	f.handle("GET "+apiPath("/messages/{id}"), http.StatusOK, msg)
+	f.handle("GET "+apiPath("/messages"), http.StatusOK, messagePage("", msg))
+	cs := connect(t, testOptions(t, f))
+
+	got := decode[map[string]any](t, callTool(t, cs, "get_message", map[string]any{"message_id": outboundMessageID}))
+	listed := decode[map[string]any](t, callTool(t, cs, "list_messages", map[string]any{}))
+
+	for name, m := range map[string]any{"get_message": got, "list_messages": field(t, listed, "messages.0")} {
+		assert.Equal(t, "2026-10-01T11:30:00Z", field(t, m, "updated_at"), name)
+		assert.Equal(t, float64(4242), field(t, m, "reference_message_id"), name)
+		assert.Equal(t, "1f2e3d4c-5b6a-4978-8695-a4b3c2d1e0f9", field(t, m, "domain_id"), name)
+		assert.NotContains(t, m, "account_id", name)
+	}
+	assert.NotContains(t, field(t, got, "delivery_attempts.0"), "report_message_id")
+	assert.Equal(t, reportID, field(t, got, "delivery_attempts.1.report_message_id"))
+	assert.Equal(t, "logo@example.com", field(t, got, "attachments.0.content_id"))
+	assert.NotContains(t, field(t, got, "attachments.1"), "content_id")
+}
+
+func TestMessageSummaryLeavesOutAMissingReferenceMessageID(t *testing.T) {
+	f := newFakeAPI(t)
+	f.handle("GET "+apiPath("/messages"), http.StatusOK, messagePage("", messageJSON(outboundMessageID, "outbound")))
+	cs := connect(t, testOptions(t, f))
+
+	listed := decode[map[string]any](t, callTool(t, cs, "list_messages", map[string]any{}))
+	assert.NotContains(t, field(t, listed, "messages.0"), "reference_message_id")
+}

@@ -58,9 +58,9 @@ func domainsTools() []tool {
 			RequiredScopes: []string{"domains:write"},
 			Annotations:    annWrite(),
 		}, "Changes a sending domain's settings: its custom tracking, return-path, subscription and media "+
-			"subdomains, its sending type, and its DKIM rotation interval. Use it when the user wants one of these "+
-			"changed. Only the fields given change. A new "+
-			"subdomain needs its own DNS record; the result holds the domain with its records.",
+			"subdomains, its sending type, and its DKIM rotation interval and selector. Use it when the user "+
+			"wants one of these changed. Only the fields given change. A new subdomain or DKIM selector "+
+			"needs its own DNS records; the result holds the domain with its records.",
 			updateDomain),
 		newTool(ToolInfo{
 			Name:           "delete_domain",
@@ -100,8 +100,10 @@ type domainSummary struct {
 	SendingType    string     `json:"sending_type,omitempty" jsonschema:"transactional or marketing."`
 	DNSValid       bool       `json:"dns_valid" jsonschema:"True when every required DNS record is in place."`
 	Paused         bool       `json:"paused" jsonschema:"True when sending from the domain is paused."`
+	PausedAt       *time.Time `json:"paused_at,omitempty" jsonschema:"When sending from the domain was paused."`
 	PauseReason    string     `json:"pause_reason,omitempty" jsonschema:"Why sending is paused."`
 	CreatedAt      time.Time  `json:"created_at" jsonschema:"When the domain was added."`
+	UpdatedAt      time.Time  `json:"updated_at" jsonschema:"When the domain last changed."`
 	LastDNSCheckAt *time.Time `json:"last_dns_check_at,omitempty" jsonschema:"When the DNS records were last checked."`
 }
 
@@ -112,7 +114,9 @@ func domainSummaryFrom(d *responses.Domain) domainSummary {
 		SendingType:    d.SendingType,
 		DNSValid:       d.DNSValid,
 		Paused:         d.Paused,
+		PausedAt:       d.PausedAt,
 		CreatedAt:      d.CreatedAt,
+		UpdatedAt:      d.UpdatedAt,
 		LastDNSCheckAt: d.LastDNSCheckAt,
 	}
 	if d.PauseReason != nil {
@@ -130,6 +134,9 @@ type domainDetail struct {
 	SubscriptionSubdomain    string      `json:"subscription_subdomain,omitempty" jsonschema:"Custom subscription management subdomain."`
 	MediaSubdomain           string      `json:"media_subdomain,omitempty" jsonschema:"Custom media subdomain."`
 	DKIMRotationIntervalDays int         `json:"dkim_rotation_interval_days,omitempty" jsonschema:"DKIM key rotation interval in days."`
+	DKIMSelector             string      `json:"dkim_selector,omitempty" jsonschema:"Custom DKIM selector; missing when none is set. The selector used for signing can differ, such as one that locked after DNS verification."`
+	RotationReady            bool        `json:"rotation_ready" jsonschema:"True when the standby DKIM key is ready for rotation."`
+	DSNRecipient             string      `json:"dsn_recipient,omitempty" jsonschema:"Address that the domain's delivery status notifications go to, when the account sends them."`
 }
 
 func domainDetailFrom(d *responses.Domain) domainDetail {
@@ -145,6 +152,9 @@ func domainDetailFrom(d *responses.Domain) domainDetail {
 	out.SubscriptionSubdomain = deref(d.SubscriptionSubdomain)
 	out.MediaSubdomain = deref(d.MediaSubdomain)
 	out.DKIMRotationIntervalDays = deref(d.DKIMRotationIntervalDays)
+	out.DKIMSelector = deref(d.DKIMSelector)
+	out.RotationReady = d.RotationReady
+	out.DSNRecipient = deref(d.DSNRecipient)
 	return out
 }
 
@@ -232,6 +242,7 @@ func optionalInt(v int) *int {
 type addDomainInput struct {
 	domainInput
 	domainSettings
+	DKIMSelector string `json:"dkim_selector,omitempty" jsonschema:"Custom DKIM selector, for Platform Partner accounts: one DNS label of 1 to 62 letters, digits and hyphens, without a hyphen at either end, kept in lowercase. When omitted, the default is used."`
 }
 
 func addDomain(ctx context.Context, env *toolEnv, in addDomainInput) (domainDetail, error) {
@@ -247,6 +258,7 @@ func addDomain(ctx context.Context, env *toolEnv, in addDomainInput) (domainDeta
 		SubscriptionSubdomain:    optionalString(in.SubscriptionSubdomain),
 		MediaSubdomain:           optionalString(in.MediaSubdomain),
 		DKIMRotationIntervalDays: optionalInt(in.DKIMRotationIntervalDays),
+		DKIMSelector:             optionalString(in.DKIMSelector),
 	}
 	d, _, err := env.client.DomainsAPI.CreateDomain(ctx, env.accountID, req)
 	if err != nil {
@@ -270,6 +282,7 @@ func checkDomainDNS(ctx context.Context, env *toolEnv, in domainInput) (domainDe
 type updateDomainInput struct {
 	domainInput
 	domainSettings
+	DKIMSelector *string `json:"dkim_selector,omitempty" jsonschema:"New custom DKIM selector, for Platform Partner accounts: one DNS label of 1 to 62 letters, digits and hyphens, without a hyphen at either end, kept in lowercase. It cannot change once it locks after DNS verification or while a DKIM rotation runs. When omitted, the current value is kept. An empty value clears it."`
 }
 
 func updateDomain(ctx context.Context, env *toolEnv, in updateDomainInput) (domainDetail, error) {
@@ -284,6 +297,7 @@ func updateDomain(ctx context.Context, env *toolEnv, in updateDomainInput) (doma
 		SubscriptionSubdomain:    optionalString(in.SubscriptionSubdomain),
 		MediaSubdomain:           optionalString(in.MediaSubdomain),
 		DKIMRotationIntervalDays: optionalInt(in.DKIMRotationIntervalDays),
+		DKIMSelector:             in.DKIMSelector,
 	}
 	d, _, err := env.client.DomainsAPI.UpdateDomain(ctx, env.accountID, name, req)
 	if err != nil {

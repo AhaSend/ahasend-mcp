@@ -150,6 +150,12 @@ func attachments(in []attachmentInput) []common.Attachment {
 	return out
 }
 
+// retentionInput is how long one message's data is kept.
+type retentionInput struct {
+	Metadata *int32 `json:"metadata,omitempty" jsonschema:"Days to keep the message's metadata, from 1 to 30. A value above the limit of the account's plan is lowered to that limit."`
+	Data     *int32 `json:"data,omitempty" jsonschema:"Days to keep the message's content, from 0 to 30. 0 keeps no copy; only accounts that may turn off message data retention get it, and other accounts keep their default. A value above the limit of the account's plan is lowered to that limit, and the content is never kept longer than the message's metadata."`
+}
+
 // sendOptions are the send settings every send tool takes.
 type sendOptions struct {
 	ReplyTo       *addressInput     `json:"reply_to,omitempty" jsonschema:"Reply-to address."`
@@ -160,6 +166,7 @@ type sendOptions struct {
 	SandboxResult string            `json:"sandbox_result,omitempty" jsonschema:"With sandbox: the outcome to simulate, one of deliver, bounce, defer, fail, suppress."`
 	TrackOpens    *bool             `json:"track_opens,omitempty" jsonschema:"Track opens; omit to use the account setting."`
 	TrackClicks   *bool             `json:"track_clicks,omitempty" jsonschema:"Track clicks; omit to use the account setting."`
+	Retention     *retentionInput   `json:"retention,omitempty" jsonschema:"Days to keep this message's data; omit to use the account settings."`
 	SendAt        *time.Time        `json:"send_at,omitempty" jsonschema:"RFC 3339 time for the first delivery attempt, within 7 days; omit to send now."`
 	ExpiresAt     *time.Time        `json:"expires_at,omitempty" jsonschema:"RFC 3339 time after which an undelivered message is dropped, within 8 days."`
 }
@@ -185,6 +192,13 @@ func (o sendOptions) tracking() *common.Tracking {
 	return &common.Tracking{Open: o.TrackOpens, Click: o.TrackClicks}
 }
 
+func (o sendOptions) retention() *common.Retention {
+	if o.Retention == nil || (o.Retention.Metadata == nil && o.Retention.Data == nil) {
+		return nil
+	}
+	return &common.Retention{Metadata: o.Retention.Metadata, Data: o.Retention.Data}
+}
+
 func (o sendOptions) schedule() *common.MessageSchedule {
 	if o.SendAt == nil && o.ExpiresAt == nil {
 		return nil
@@ -198,6 +212,7 @@ type sendEmailInput struct {
 	Subject       string           `json:"subject" jsonschema:"Subject line."`
 	TextContent   string           `json:"text_content,omitempty" jsonschema:"Plain text body. Give text_content, html_content or both."`
 	HTMLContent   string           `json:"html_content,omitempty" jsonschema:"HTML body. Give text_content, html_content or both."`
+	AMPContent    string           `json:"amp_content,omitempty" jsonschema:"AMP HTML body, for email clients that show AMP. It needs text_content or html_content too."`
 	Substitutions map[string]any   `json:"substitutions,omitempty" jsonschema:"Values for every recipient's variables; a recipient's own substitutions replace them."`
 	sendOptions
 }
@@ -210,6 +225,7 @@ type sendConversationInput struct {
 	Subject     string         `json:"subject" jsonschema:"Subject line."`
 	TextContent string         `json:"text_content,omitempty" jsonschema:"Plain text body. Give text_content, html_content or both."`
 	HTMLContent string         `json:"html_content,omitempty" jsonschema:"HTML body. Give text_content, html_content or both."`
+	AMPContent  string         `json:"amp_content,omitempty" jsonschema:"AMP HTML body, for email clients that show AMP. It needs text_content or html_content too."`
 	sendOptions
 }
 
@@ -229,15 +245,17 @@ type sentMessage struct {
 	ID              string     `json:"id,omitempty" jsonschema:"Message ID, for get_message, diagnose_message and cancel_scheduled_email."`
 	MessageIDHeader string     `json:"message_id_header,omitempty" jsonschema:"The email's Message-ID header, for the message_id_header filter of list_messages."`
 	Recipient       string     `json:"recipient" jsonschema:"Recipient email address."`
+	RecipientName   string     `json:"recipient_name,omitempty" jsonschema:"Recipient display name."`
 	Status          string     `json:"status" jsonschema:"Status of the message right after the send."`
 	Error           string     `json:"error,omitempty" jsonschema:"Why this recipient's message was not sent."`
 	SendAt          *time.Time `json:"send_at,omitempty" jsonschema:"Scheduled first delivery attempt."`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty" jsonschema:"Time after which an undelivered message is dropped."`
 }
 
 func sendOutputFrom(resp *responses.CreateMessageResponse) sendOutput {
 	out := sendOutput{Messages: []sentMessage{}}
 	for _, m := range resp.Data {
-		sent := sentMessage{Recipient: m.Recipient.Email, Status: m.Status}
+		sent := sentMessage{Recipient: m.Recipient.Email, RecipientName: deref(m.Recipient.Name), Status: m.Status}
 		if m.ID != nil {
 			sent.ID = *m.ID
 		}
@@ -249,6 +267,7 @@ func sendOutputFrom(resp *responses.CreateMessageResponse) sendOutput {
 		}
 		if m.Schedule != nil {
 			sent.SendAt = m.Schedule.FirstAttempt
+			sent.ExpiresAt = m.Schedule.Expires
 		}
 		out.Messages = append(out.Messages, sent)
 	}
@@ -282,6 +301,7 @@ func sendEmail(ctx context.Context, env *toolEnv, in sendEmailInput) (sendOutput
 		ReplyTo:       senderPtr(in.ReplyTo),
 		TextContent:   optionalString(in.TextContent),
 		HtmlContent:   optionalString(in.HTMLContent),
+		AmpContent:    optionalString(in.AMPContent),
 		Attachments:   attachments(in.Attachments),
 		Headers:       in.Headers,
 		Substitutions: in.Substitutions,
@@ -289,6 +309,7 @@ func sendEmail(ctx context.Context, env *toolEnv, in sendEmailInput) (sendOutput
 		Sandbox:       in.sandbox(),
 		SandboxResult: in.sandboxResult(),
 		Tracking:      in.tracking(),
+		Retention:     in.retention(),
 		Schedule:      in.schedule(),
 	}
 	resp, _, err := env.client.MessagesAPI.CreateMessage(ctx, env.accountID, req)
@@ -311,12 +332,14 @@ func sendConversationEmail(ctx context.Context, env *toolEnv, in sendConversatio
 		ReplyTo:       senderPtr(in.ReplyTo),
 		TextContent:   optionalString(in.TextContent),
 		HtmlContent:   optionalString(in.HTMLContent),
+		AmpContent:    optionalString(in.AMPContent),
 		Attachments:   attachments(in.Attachments),
 		Headers:       in.Headers,
 		Tags:          in.Tags,
 		Sandbox:       in.sandbox(),
 		SandboxResult: in.sandboxResult(),
 		Tracking:      in.tracking(),
+		Retention:     in.retention(),
 		Schedule:      in.schedule(),
 	}
 	resp, _, err := env.client.MessagesAPI.CreateConversationMessage(ctx, env.accountID, req)
@@ -346,6 +369,7 @@ func sendTemplateEmail(ctx context.Context, env *toolEnv, in sendTemplateInput) 
 		Sandbox:       in.sandbox(),
 		SandboxResult: in.sandboxResult(),
 		Tracking:      in.tracking(),
+		Retention:     in.retention(),
 		Schedule:      in.schedule(),
 	}
 	resp, _, err := env.client.MessagesAPI.CreateTemplateMessage(ctx, env.accountID, req)

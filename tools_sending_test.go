@@ -246,3 +246,139 @@ func TestOneOffSendLimitFollowsOptions(t *testing.T) {
 	assert.Contains(t, text, "at most 2")
 	assert.Empty(t, f.calls())
 }
+
+func TestSendToolsSendTheAMPContentOnlyWhenGiven(t *testing.T) {
+	tests := []struct {
+		tool string
+		path string
+		args map[string]any
+	}{
+		{"send_email", "/messages", map[string]any{
+			"from":       map[string]any{"email": "app@mail.example.com"},
+			"recipients": []map[string]any{{"email": "a@example.org"}},
+			"subject":    "Hi", "html_content": "<p>Hi</p>",
+		}},
+		{"send_conversation_email", "/messages/conversation", map[string]any{
+			"from":    map[string]any{"email": "app@mail.example.com"},
+			"to":      []map[string]any{{"email": "a@example.org"}},
+			"subject": "Hi", "html_content": "<p>Hi</p>",
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.tool, func(t *testing.T) {
+			f := newFakeAPI(t)
+			f.handle("POST "+apiPath(tt.path), http.StatusOK, sendResponse("a@example.org"))
+			cs := connect(t, testOptions(t, f))
+
+			decode[sendOutput](t, callTool(t, cs, tt.tool, tt.args))
+			withAMP := map[string]any{"amp_content": "<!doctype html><html ⚡4email><body>Hi</body></html>"}
+			for k, v := range tt.args {
+				withAMP[k] = v
+			}
+			decode[sendOutput](t, callTool(t, cs, tt.tool, withAMP))
+
+			calls := f.calls()
+			require.Len(t, calls, 2)
+			assert.NotContains(t, calls[0].Body, "amp_content")
+			assert.Equal(t, withAMP["amp_content"], calls[1].Body["amp_content"])
+			assert.Equal(t, "<p>Hi</p>", calls[1].Body["html_content"])
+		})
+	}
+}
+
+func TestSendToolsSendTheRetentionOnlyWhenGiven(t *testing.T) {
+	tests := []struct {
+		tool string
+		path string
+		args map[string]any
+	}{
+		{"send_email", "/messages", map[string]any{
+			"from":       map[string]any{"email": "app@mail.example.com"},
+			"recipients": []map[string]any{{"email": "a@example.org"}},
+			"subject":    "Hi", "text_content": "Hi",
+		}},
+		{"send_conversation_email", "/messages/conversation", map[string]any{
+			"from":    map[string]any{"email": "app@mail.example.com"},
+			"to":      []map[string]any{{"email": "a@example.org"}},
+			"subject": "Hi", "text_content": "Hi",
+		}},
+		{"send_template_email", "/messages/template", map[string]any{
+			"template_id": testTemplateID,
+			"recipients":  []map[string]any{{"email": "a@example.org"}},
+		}},
+	}
+	retentions := []struct {
+		name string
+		in   map[string]any
+		want any // nil: not sent
+	}{
+		{"not given", nil, nil},
+		{"both", map[string]any{"metadata": 7, "data": 0}, map[string]any{"metadata": float64(7), "data": float64(0)}},
+		{"data only", map[string]any{"data": 3}, map[string]any{"data": float64(3)}},
+		{"empty", map[string]any{}, nil},
+	}
+	for _, tt := range tests {
+		for _, r := range retentions {
+			t.Run(tt.tool+" "+r.name, func(t *testing.T) {
+				f := newFakeAPI(t)
+				f.handle("POST "+apiPath(tt.path), http.StatusOK, sendResponse("a@example.org"))
+				cs := connect(t, testOptions(t, f))
+
+				args := map[string]any{}
+				for k, v := range tt.args {
+					args[k] = v
+				}
+				if r.in != nil {
+					args["retention"] = r.in
+				}
+				decode[sendOutput](t, callTool(t, cs, tt.tool, args))
+
+				body := f.onlyCall(t).Body
+				if r.want == nil {
+					assert.NotContains(t, body, "retention")
+					return
+				}
+				assert.Equal(t, r.want, body["retention"])
+			})
+		}
+	}
+}
+
+func TestSendOutputHasTheRecipientNameAndExpiry(t *testing.T) {
+	f := newFakeAPI(t)
+	resp := map[string]any{"object": "list", "data": []map[string]any{{
+		"object": "message", "id": outboundMessageID, "message_id_header": "<" + outboundMessageID + "@mail.example.com>",
+		"recipient": map[string]any{"email": "a@example.org", "name": "Ann"},
+		"status":    "scheduled",
+		"schedule":  map[string]any{"first_attempt": "2026-10-13T09:00:00Z", "expires": "2026-10-14T09:00:00Z"},
+	}}}
+	f.handle("POST "+apiPath("/messages"), http.StatusOK, resp)
+	cs := connect(t, testOptions(t, f))
+
+	out := decode[map[string]any](t, callTool(t, cs, "send_email", map[string]any{
+		"from":       map[string]any{"email": "app@mail.example.com"},
+		"recipients": []map[string]any{{"email": "a@example.org", "name": "Ann"}},
+		"subject":    "Hi", "text_content": "Hi",
+		"send_at": "2026-10-13T09:00:00Z", "expires_at": "2026-10-14T09:00:00Z",
+	}))
+
+	assert.Equal(t, "Ann", field(t, out, "messages.0.recipient_name"))
+	assert.Equal(t, "2026-10-13T09:00:00Z", field(t, out, "messages.0.send_at"))
+	assert.Equal(t, "2026-10-14T09:00:00Z", field(t, out, "messages.0.expires_at"))
+}
+
+func TestSendOutputLeavesOutARecipientNameAndExpiryTheAPIDidNotReturn(t *testing.T) {
+	f := newFakeAPI(t)
+	f.handle("POST "+apiPath("/messages"), http.StatusOK, sendResponse("a@example.org"))
+	cs := connect(t, testOptions(t, f))
+
+	out := decode[map[string]any](t, callTool(t, cs, "send_email", map[string]any{
+		"from":       map[string]any{"email": "app@mail.example.com"},
+		"recipients": []map[string]any{{"email": "a@example.org"}},
+		"subject":    "Hi", "text_content": "Hi",
+	}))
+
+	sent := field(t, out, "messages.0").(map[string]any)
+	assert.NotContains(t, sent, "recipient_name")
+	assert.NotContains(t, sent, "expires_at")
+}

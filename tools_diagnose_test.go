@@ -312,3 +312,37 @@ func TestDiagnoseMessageIgnoresExpiredSuppressions(t *testing.T) {
 	assert.Empty(t, out.Suppressions)
 	assert.NotContains(t, out.LikelyCause, "suppressed now")
 }
+
+func TestDiagnoseMessageReturnsTheReportMessageAndProtectedSuppressions(t *testing.T) {
+	const reportID = "7a6b5c4d-3e2f-4a1b-9c8d-7e6f5a4b3c2d"
+	msg := bouncedMessageJSON()
+	msg["status"] = "OOB"
+	msg["delivery_attempts"] = []map[string]any{
+		{"time": "2026-10-01T10:00:30Z", "log": "250 OK", "status": "Delivered"},
+		{"time": "2026-10-01T11:00:00Z", "log": "550 5.1.1 user unknown", "status": "Bounced", "report_message_id": reportID},
+	}
+	suppressions := suppressionPage()
+	suppressions["data"].([]map[string]any)[0]["protected"] = true
+	f := newFakeAPI(t)
+	f.handle("GET "+apiPath("/messages/{id}"), http.StatusOK, msg)
+	f.handle("GET "+apiPath("/suppressions"), http.StatusOK, suppressions)
+	f.handle("GET "+apiPath("/domains/{domain}"), http.StatusOK, domainJSON("mail.example.com"))
+	cs := connect(t, testOptions(t, f))
+
+	out := decode[map[string]any](t, callTool(t, cs, "diagnose_message", map[string]any{"message_id": outboundMessageID}))
+
+	assert.NotContains(t, field(t, out, "message.delivery_attempts.0"), "report_message_id")
+	assert.Equal(t, reportID, field(t, out, "message.delivery_attempts.1.report_message_id"))
+	assert.Equal(t, true, field(t, out, "suppressions.0.protected"))
+}
+
+func TestDiagnoseMessageSaysWhenASuppressionIsNotProtected(t *testing.T) {
+	f := newFakeAPI(t)
+	f.handle("GET "+apiPath("/messages/{id}"), http.StatusOK, bouncedMessageJSON())
+	f.handle("GET "+apiPath("/suppressions"), http.StatusOK, suppressionPage())
+	f.handle("GET "+apiPath("/domains/{domain}"), http.StatusOK, domainJSON("mail.example.com"))
+	cs := connect(t, testOptions(t, f))
+
+	out := decode[map[string]any](t, callTool(t, cs, "diagnose_message", map[string]any{"message_id": outboundMessageID}))
+	assert.Equal(t, false, field(t, out, "suppressions.0.protected"))
+}

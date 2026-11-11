@@ -3,7 +3,9 @@ package ahasendmcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -497,4 +499,144 @@ func TestWebhookSchemasHaveTheSendingTypeSetting(t *testing.T) {
 	assert.Equal(t, text, out.Properties["on_sending_type_changed"].Description)
 	assert.Contains(t, out.Required, "on_sending_type_changed", "always returned, like on_dns_error")
 	assert.Contains(t, out.Required, "on_dns_error")
+}
+
+// webhookEventSettings are every event setting of create_webhook, which are
+// also the event filters of list_webhooks.
+var webhookEventSettings = []string{
+	"on_reception", "on_delivered", "on_transient_error", "on_failed", "on_bounced", "on_suppressed",
+	"on_opened", "on_clicked", "on_suppression_created", "on_dns_error", "on_sending_type_changed",
+	"on_unsubscribed", "on_complained", "on_suppression_deleted",
+	"on_contact_created", "on_contact_updated", "on_contact_deleted",
+	"on_contact_added_to_list", "on_contact_removed_from_list",
+	"on_contact_subscribed", "on_contact_unsubscribed", "on_contact_complained",
+}
+
+func TestListWebhooksFiltersByEachEventSetting(t *testing.T) {
+	for _, setting := range webhookEventSettings {
+		for _, value := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s=%t", setting, value), func(t *testing.T) {
+				want := map[string]string{"limit": "20", setting: fmt.Sprint(value)}
+				var noQuery []string
+				for _, other := range webhookEventSettings {
+					if other != setting {
+						noQuery = append(noQuery, other)
+					}
+				}
+				runToolCases(t, []toolCase{{
+					tool: "list_webhooks", args: map[string]any{setting: value},
+					method: http.MethodGet, path: "/webhooks", resp: page(webhookJSON("")),
+					wantQuery: want, noQuery: append(noQuery, "enabled"),
+				}})
+			})
+		}
+	}
+}
+
+func TestListWebhooksSendsNoEventFilterWhenNoneIsGiven(t *testing.T) {
+	runToolCases(t, []toolCase{{
+		tool: "list_webhooks", args: map[string]any{"enabled": true},
+		method: http.MethodGet, path: "/webhooks", resp: page(webhookJSON("")),
+		wantQuery: map[string]string{"enabled": "true"},
+		noQuery:   webhookEventSettings,
+	}})
+}
+
+func TestListWebhooksEventFiltersHaveTheCreateWebhookSettingNames(t *testing.T) {
+	schemas := inputProperties(t, connect(t, testOptions(t, newFakeAPI(t))))
+	for _, setting := range webhookEventSettings {
+		require.Contains(t, schemas["create_webhook"], setting)
+		require.Contains(t, schemas["list_webhooks"], setting)
+		assert.Equal(t, "true for webhooks with "+setting+" on, false for those with it off.", schemas["list_webhooks"][setting])
+	}
+	for _, tool := range []string{"create_webhook", "list_webhooks"} {
+		for name := range schemas[tool] {
+			if strings.HasPrefix(name, "on_") {
+				assert.Contains(t, webhookEventSettings, name, tool)
+			}
+		}
+	}
+}
+
+func TestManagementOutputsHaveTheirUpdateTime(t *testing.T) {
+	const updated = "2026-10-05T07:45:00Z"
+	webhook := webhookJSON("")
+	webhook["updated_at"] = updated
+	route := routeJSON("")
+	route["updated_at"] = updated
+	credential := smtpCredentialJSON()
+	credential["updated_at"] = updated
+
+	runToolCases(t, []toolCase{
+		{
+			tool: "get_webhook", args: map[string]any{"webhook_id": testWebhookID},
+			method: http.MethodGet, path: "/webhooks/" + testWebhookID, resp: webhook,
+			check: func(t *testing.T, out map[string]any) { assert.Equal(t, updated, out["updated_at"]) },
+		},
+		{
+			tool: "list_webhooks", args: map[string]any{},
+			method: http.MethodGet, path: "/webhooks", resp: page(webhook),
+			check: func(t *testing.T, out map[string]any) {
+				assert.Equal(t, updated, field(t, out, "webhooks.0.updated_at"))
+			},
+		},
+		{
+			tool: "get_route", args: map[string]any{"route_id": testRouteID},
+			method: http.MethodGet, path: "/routes/" + testRouteID, resp: route,
+			check: func(t *testing.T, out map[string]any) { assert.Equal(t, updated, out["updated_at"]) },
+		},
+		{
+			tool: "list_routes", args: map[string]any{},
+			method: http.MethodGet, path: "/routes", resp: page(route),
+			check: func(t *testing.T, out map[string]any) {
+				assert.Equal(t, updated, field(t, out, "routes.0.updated_at"))
+			},
+		},
+		{
+			tool: "get_smtp_credential", args: map[string]any{"smtp_credential_id": testSMTPCredentialID},
+			method: http.MethodGet, path: "/smtp-credentials/" + testSMTPCredentialID, resp: credential,
+			check: func(t *testing.T, out map[string]any) { assert.Equal(t, updated, out["updated_at"]) },
+		},
+		{
+			tool: "list_smtp_credentials", args: map[string]any{},
+			method: http.MethodGet, path: "/smtp-credentials", resp: page(credential),
+			check: func(t *testing.T, out map[string]any) {
+				assert.Equal(t, updated, field(t, out, "smtp_credentials.0.updated_at"))
+			},
+		},
+	})
+}
+
+func TestGetAccountReturnsAboutOwnerAndUpdateTime(t *testing.T) {
+	const ownerID = "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b"
+	runToolCases(t, []toolCase{{
+		tool: "get_account", args: map[string]any{},
+		method: http.MethodGet, path: "",
+		resp: map[string]any{
+			"object": "account", "id": testAccountID.String(), "created_at": fixtureTime,
+			"updated_at": "2026-10-20T16:00:00Z", "name": "Example", "about": "Shop email",
+			"owner_id": ownerID,
+		},
+		check: func(t *testing.T, out map[string]any) {
+			assert.Equal(t, "Shop email", out["about"])
+			assert.Equal(t, ownerID, out["owner_id"])
+			assert.Equal(t, "2026-10-20T16:00:00Z", out["updated_at"])
+		},
+	}})
+}
+
+func TestSubAccountOutputHasItsParentAndEveryStatus(t *testing.T) {
+	deleted := subAccountJSON()
+	deleted["status"] = "deleted"
+	runToolCases(t, []toolCase{{
+		tool: "get_sub_account", args: map[string]any{"sub_account_id": testSubAccountID},
+		method: http.MethodGet, path: "/sub-accounts/" + testSubAccountID, resp: deleted,
+		check: func(t *testing.T, out map[string]any) {
+			assert.Equal(t, testAccountID.String(), out["parent_account_id"])
+			assert.Equal(t, "deleted", out["status"])
+		},
+	}})
+
+	status := outputProperties(t, connect(t, testOptions(t, newFakeAPI(t))))["get_sub_account"]["status"]
+	assert.Contains(t, status, "active, suspended, parent-suspended (this account is suspended) or deleted")
 }

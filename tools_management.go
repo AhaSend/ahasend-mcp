@@ -19,7 +19,7 @@ func managementTools() []tool {
 			Toolset:        ToolsetManagement,
 			RequiredScopes: []string{"accounts:read"},
 			Annotations:    annRead(),
-		}, "Returns this AhaSend account: its name, website, parent account (for a sub-account), tracking "+
+		}, "Returns this AhaSend account: its name, website, description, owner, parent account (for a sub-account), tracking "+
 			"defaults, recipient checks and how many days message data is kept. Use it to answer questions about "+
 			"the account's settings; the user changes them in the AhaSend dashboard.",
 			getAccount),
@@ -31,7 +31,8 @@ func managementTools() []tool {
 			Annotations:    annRead(),
 		}, "Lists the webhooks of this account with their URL, the events each sends, the domains and origins it covers "+
 			"and its success and error counts since it was created, but not their signing secrets. Use it to find a webhook or "+
-			"see why events are not arriving. A connection limited to some domains sees only their webhooks. "+
+			"see why events are not arriving; filter by enabled state or by event setting. A connection limited to some "+
+			"domains sees only their webhooks. "+
 			"The result holds one page and a next_cursor for the page after it.",
 			listWebhooks),
 		newTool(ToolInfo{
@@ -252,7 +253,9 @@ type accountOutput struct {
 	ID                       string    `json:"id" jsonschema:"Account ID."`
 	Name                     string    `json:"name" jsonschema:"Account name."`
 	ParentAccountID          string    `json:"parent_account_id,omitempty" jsonschema:"The parent account, for a sub-account."`
+	OwnerID                  string    `json:"owner_id" jsonschema:"User ID of the account's owner."`
 	Website                  string    `json:"website,omitempty" jsonschema:"Website."`
+	About                    string    `json:"about,omitempty" jsonschema:"Description of the account."`
 	TrackOpens               *bool     `json:"track_opens,omitempty" jsonschema:"Default for open tracking."`
 	TrackClicks              *bool     `json:"track_clicks,omitempty" jsonschema:"Default for click tracking."`
 	RejectBadRecipients      *bool     `json:"reject_bad_recipients,omitempty" jsonschema:"Whether bad recipient addresses are rejected."`
@@ -260,6 +263,7 @@ type accountOutput struct {
 	MessageMetadataRetention *int32    `json:"message_metadata_retention_days,omitempty" jsonschema:"Days message metadata is kept."`
 	MessageDataRetention     *int32    `json:"message_data_retention_days,omitempty" jsonschema:"Days message content is kept."`
 	CreatedAt                time.Time `json:"created_at" jsonschema:"When the account was created."`
+	UpdatedAt                time.Time `json:"updated_at" jsonschema:"When the account last changed."`
 }
 
 func getAccount(ctx context.Context, env *toolEnv, _ struct{}) (accountOutput, error) {
@@ -270,7 +274,9 @@ func getAccount(ctx context.Context, env *toolEnv, _ struct{}) (accountOutput, e
 	out := accountOutput{
 		ID:                       a.ID.String(),
 		Name:                     a.Name,
+		OwnerID:                  a.OwnerID.String(),
 		Website:                  deref(a.Website),
+		About:                    deref(a.About),
 		TrackOpens:               a.TrackOpens,
 		TrackClicks:              a.TrackClicks,
 		RejectBadRecipients:      a.RejectBadRecipients,
@@ -278,6 +284,7 @@ func getAccount(ctx context.Context, env *toolEnv, _ struct{}) (accountOutput, e
 		MessageMetadataRetention: a.MessageMetadataRetention,
 		MessageDataRetention:     a.MessageDataRetention,
 		CreatedAt:                a.CreatedAt,
+		UpdatedAt:                a.UpdatedAt,
 	}
 	if a.ParentAccountID != nil {
 		out.ParentAccountID = a.ParentAccountID.String()
@@ -353,6 +360,7 @@ type webhookOutput struct {
 	ErrorsSinceLastSuccess int        `json:"errors_since_last_success" jsonschema:"Failed posts since the last success."`
 	LastRequestAt          *time.Time `json:"last_request_at,omitempty" jsonschema:"When the last post was made."`
 	CreatedAt              time.Time  `json:"created_at" jsonschema:"When the webhook was created."`
+	UpdatedAt              time.Time  `json:"updated_at" jsonschema:"When the webhook last changed."`
 	Secret                 string     `json:"secret,omitempty" jsonschema:"Signing secret; returned only when the webhook is created."`
 }
 
@@ -394,13 +402,42 @@ func webhookFrom(w *responses.Webhook) webhookOutput {
 		ErrorsSinceLastSuccess: w.ErrorsSinceLastSuccess,
 		LastRequestAt:          w.LastRequestAt,
 		CreatedAt:              w.CreatedAt,
+		UpdatedAt:              w.UpdatedAt,
 		Secret:                 w.Secret,
 	}
+}
+
+// webhookEventFilters filter webhooks by their event settings; a missing
+// filter matches every webhook.
+type webhookEventFilters struct {
+	OnReception              *bool `json:"on_reception,omitempty" jsonschema:"true for webhooks with on_reception on, false for those with it off."`
+	OnDelivered              *bool `json:"on_delivered,omitempty" jsonschema:"true for webhooks with on_delivered on, false for those with it off."`
+	OnTransientError         *bool `json:"on_transient_error,omitempty" jsonschema:"true for webhooks with on_transient_error on, false for those with it off."`
+	OnFailed                 *bool `json:"on_failed,omitempty" jsonschema:"true for webhooks with on_failed on, false for those with it off."`
+	OnBounced                *bool `json:"on_bounced,omitempty" jsonschema:"true for webhooks with on_bounced on, false for those with it off."`
+	OnSuppressed             *bool `json:"on_suppressed,omitempty" jsonschema:"true for webhooks with on_suppressed on, false for those with it off."`
+	OnOpened                 *bool `json:"on_opened,omitempty" jsonschema:"true for webhooks with on_opened on, false for those with it off."`
+	OnClicked                *bool `json:"on_clicked,omitempty" jsonschema:"true for webhooks with on_clicked on, false for those with it off."`
+	OnSuppressionCreated     *bool `json:"on_suppression_created,omitempty" jsonschema:"true for webhooks with on_suppression_created on, false for those with it off."`
+	OnDNSError               *bool `json:"on_dns_error,omitempty" jsonschema:"true for webhooks with on_dns_error on, false for those with it off."`
+	OnSendingTypeChanged     *bool `json:"on_sending_type_changed,omitempty" jsonschema:"true for webhooks with on_sending_type_changed on, false for those with it off."`
+	OnUnsubscribed           *bool `json:"on_unsubscribed,omitempty" jsonschema:"true for webhooks with on_unsubscribed on, false for those with it off."`
+	OnComplained             *bool `json:"on_complained,omitempty" jsonschema:"true for webhooks with on_complained on, false for those with it off."`
+	OnSuppressionDeleted     *bool `json:"on_suppression_deleted,omitempty" jsonschema:"true for webhooks with on_suppression_deleted on, false for those with it off."`
+	OnContactCreated         *bool `json:"on_contact_created,omitempty" jsonschema:"true for webhooks with on_contact_created on, false for those with it off."`
+	OnContactUpdated         *bool `json:"on_contact_updated,omitempty" jsonschema:"true for webhooks with on_contact_updated on, false for those with it off."`
+	OnContactDeleted         *bool `json:"on_contact_deleted,omitempty" jsonschema:"true for webhooks with on_contact_deleted on, false for those with it off."`
+	OnContactAddedToList     *bool `json:"on_contact_added_to_list,omitempty" jsonschema:"true for webhooks with on_contact_added_to_list on, false for those with it off."`
+	OnContactRemovedFromList *bool `json:"on_contact_removed_from_list,omitempty" jsonschema:"true for webhooks with on_contact_removed_from_list on, false for those with it off."`
+	OnContactSubscribed      *bool `json:"on_contact_subscribed,omitempty" jsonschema:"true for webhooks with on_contact_subscribed on, false for those with it off."`
+	OnContactUnsubscribed    *bool `json:"on_contact_unsubscribed,omitempty" jsonschema:"true for webhooks with on_contact_unsubscribed on, false for those with it off."`
+	OnContactComplained      *bool `json:"on_contact_complained,omitempty" jsonschema:"true for webhooks with on_contact_complained on, false for those with it off."`
 }
 
 type listWebhooksInput struct {
 	pageInput
 	Enabled *bool `json:"enabled,omitempty" jsonschema:"true for enabled webhooks only, false for disabled ones."`
+	webhookEventFilters
 }
 
 type listWebhooksOutput struct {
@@ -414,8 +451,30 @@ func listWebhooks(ctx context.Context, env *toolEnv, in listWebhooksInput) (list
 		return listWebhooksOutput{}, err
 	}
 	resp, _, err := env.client.WebhooksAPI.GetWebhooks(ctx, env.accountID, api.GetWebhooksParams{
-		Enabled:          in.Enabled,
-		PaginationParams: page,
+		Enabled:                  in.Enabled,
+		OnReception:              in.OnReception,
+		OnDelivered:              in.OnDelivered,
+		OnTransientError:         in.OnTransientError,
+		OnFailed:                 in.OnFailed,
+		OnBounced:                in.OnBounced,
+		OnSuppressed:             in.OnSuppressed,
+		OnOpened:                 in.OnOpened,
+		OnClicked:                in.OnClicked,
+		OnSuppressionCreated:     in.OnSuppressionCreated,
+		OnDnsError:               in.OnDNSError,
+		OnSendingTypeChanged:     in.OnSendingTypeChanged,
+		OnUnsubscribed:           in.OnUnsubscribed,
+		OnComplained:             in.OnComplained,
+		OnSuppressionDeleted:     in.OnSuppressionDeleted,
+		OnContactCreated:         in.OnContactCreated,
+		OnContactUpdated:         in.OnContactUpdated,
+		OnContactDeleted:         in.OnContactDeleted,
+		OnContactAddedToList:     in.OnContactAddedToList,
+		OnContactRemovedFromList: in.OnContactRemovedFromList,
+		OnContactSubscribed:      in.OnContactSubscribed,
+		OnContactUnsubscribed:    in.OnContactUnsubscribed,
+		OnContactComplained:      in.OnContactComplained,
+		PaginationParams:         page,
 	})
 	if err != nil {
 		return listWebhooksOutput{}, err
@@ -623,6 +682,7 @@ type routeOutput struct {
 	ErrorsSinceLastSuccess int        `json:"errors_since_last_success" jsonschema:"Failed posts since the last success."`
 	LastRequestAt          *time.Time `json:"last_request_at,omitempty" jsonschema:"When the last post was made."`
 	CreatedAt              time.Time  `json:"created_at" jsonschema:"When the route was created."`
+	UpdatedAt              time.Time  `json:"updated_at" jsonschema:"When the route last changed."`
 	Secret                 string     `json:"secret,omitempty" jsonschema:"Signing secret; returned only when the route is created."`
 }
 
@@ -644,6 +704,7 @@ func routeFrom(r *responses.Route) routeOutput {
 		ErrorsSinceLastSuccess: r.ErrorsSinceLastSuccess,
 		LastRequestAt:          r.LastRequestAt,
 		CreatedAt:              r.CreatedAt,
+		UpdatedAt:              r.UpdatedAt,
 		Secret:                 r.Secret,
 	}
 }
@@ -887,6 +948,7 @@ type smtpCredentialOutput struct {
 	Scope     string    `json:"scope" jsonschema:"global for every sending domain, scoped for the domains listed."`
 	Domains   []string  `json:"domains,omitempty" jsonschema:"The domains a scoped credential may send from."`
 	CreatedAt time.Time `json:"created_at" jsonschema:"When the credential was created."`
+	UpdatedAt time.Time `json:"updated_at" jsonschema:"When the credential last changed."`
 }
 
 func smtpCredentialFrom(c *responses.SMTPCredential) smtpCredentialOutput {
@@ -899,6 +961,7 @@ func smtpCredentialFrom(c *responses.SMTPCredential) smtpCredentialOutput {
 		Scope:     c.Scope,
 		Domains:   c.Domains,
 		CreatedAt: c.CreatedAt,
+		UpdatedAt: c.UpdatedAt,
 	}
 }
 
@@ -954,28 +1017,30 @@ func deleteSMTPCredential(ctx context.Context, env *toolEnv, in smtpCredentialID
 // Sub-accounts.
 
 type subAccountOutput struct {
-	ID             string     `json:"id" jsonschema:"Sub-account ID."`
-	Name           string     `json:"name" jsonschema:"Name."`
-	Website        string     `json:"website" jsonschema:"Website."`
-	Status         string     `json:"status" jsonschema:"active, suspended, or parent-suspended (this account is suspended)."`
-	MonthlyCredit  int64      `json:"monthly_credit" jsonschema:"Monthly credit cap; 0 means no cap."`
-	DomainCount    int64      `json:"domain_count" jsonschema:"Sending domains."`
-	MemberCount    int64      `json:"member_count" jsonschema:"Team members."`
-	LastActivityAt *time.Time `json:"last_activity_at,omitempty" jsonschema:"When it was last active."`
-	CreatedAt      time.Time  `json:"created_at" jsonschema:"When it was created."`
+	ID              string     `json:"id" jsonschema:"Sub-account ID."`
+	ParentAccountID string     `json:"parent_account_id" jsonschema:"ID of the parent account, which is this account."`
+	Name            string     `json:"name" jsonschema:"Name."`
+	Website         string     `json:"website" jsonschema:"Website."`
+	Status          string     `json:"status" jsonschema:"active, suspended, parent-suspended (this account is suspended) or deleted."`
+	MonthlyCredit   int64      `json:"monthly_credit" jsonschema:"Monthly credit cap; 0 means no cap."`
+	DomainCount     int64      `json:"domain_count" jsonschema:"Sending domains."`
+	MemberCount     int64      `json:"member_count" jsonschema:"Team members."`
+	LastActivityAt  *time.Time `json:"last_activity_at,omitempty" jsonschema:"When it was last active."`
+	CreatedAt       time.Time  `json:"created_at" jsonschema:"When it was created."`
 }
 
 func subAccountFrom(s *responses.SubAccount) subAccountOutput {
 	return subAccountOutput{
-		ID:             s.ID.String(),
-		Name:           s.Name,
-		Website:        s.Website,
-		Status:         s.Status,
-		MonthlyCredit:  s.MonthlyCredit,
-		DomainCount:    s.DomainCount,
-		MemberCount:    s.MemberCount,
-		LastActivityAt: s.LastActivityAt,
-		CreatedAt:      s.CreatedAt,
+		ID:              s.ID.String(),
+		ParentAccountID: s.ParentAccountID.String(),
+		Name:            s.Name,
+		Website:         s.Website,
+		Status:          s.Status,
+		MonthlyCredit:   s.MonthlyCredit,
+		DomainCount:     s.DomainCount,
+		MemberCount:     s.MemberCount,
+		LastActivityAt:  s.LastActivityAt,
+		CreatedAt:       s.CreatedAt,
 	}
 }
 
