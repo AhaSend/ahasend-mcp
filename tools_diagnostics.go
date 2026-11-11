@@ -49,7 +49,7 @@ func diagnosticsTools() []tool {
 			Name:           "get_deliverability_stats",
 			Title:          "Get deliverability statistics",
 			Toolset:        ToolsetDiagnostics,
-			RequiredScopes: []string{"statistics-transactional:read"},
+			RequiredScopes: []string{"statistics:read"},
 			Annotations:    annRead(),
 		}, "Returns counts of transactional email by outcome (received, delivered, deferred, bounced, failed, "+
 			"suppressed, opened, clicked) per time bucket. Use it to see delivery trends or compare periods. "+
@@ -60,7 +60,7 @@ func diagnosticsTools() []tool {
 			Name:           "get_bounce_stats",
 			Title:          "Get bounce statistics",
 			Toolset:        ToolsetDiagnostics,
-			RequiredScopes: []string{"statistics-transactional:read"},
+			RequiredScopes: []string{"statistics:read"},
 			Annotations:    annRead(),
 		}, "Returns transactional bounce counts by bounce classification per time bucket. Use it to find out "+
 			"why email bounces, such as invalid recipients or spam blocks. Filter by time window, sender "+
@@ -71,7 +71,7 @@ func diagnosticsTools() []tool {
 			Name:           "get_delivery_time_stats",
 			Title:          "Get delivery time statistics",
 			Toolset:        ToolsetDiagnostics,
-			RequiredScopes: []string{"statistics-transactional:read"},
+			RequiredScopes: []string{"statistics:read"},
 			Annotations:    annRead(),
 		}, "Returns the average time from acceptance to delivery, in seconds, per time bucket and per "+
 			"recipient domain. Use it to find slow receiving domains. Filter by time window, sender domain, "+
@@ -82,7 +82,7 @@ func diagnosticsTools() []tool {
 			Name:           "get_email_stats",
 			Title:          "Get email statistics",
 			Toolset:        ToolsetDiagnostics,
-			RequiredScopes: []string{"statistics-transactional:read"},
+			RequiredScopes: []string{"statistics:read"},
 			Annotations:    annRead(),
 		}, emailStatsDescription, getEmailStats),
 	}

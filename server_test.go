@@ -77,8 +77,13 @@ func TestScopesHideAndShowTools(t *testing.T) {
 		},
 		{
 			name:   "domain delete through a domain scope",
-			scopes: []string{"domains:delete:{mail.example.com}", "statistics-transactional:read:all"},
+			scopes: []string{"domains:delete:{mail.example.com}", "statistics:read:all"},
 			want:   []string{"delete_domain", "get_deliverability_stats", "get_bounce_stats", "get_delivery_time_stats", "get_email_stats"},
+		},
+		{
+			name:   "statistics through a domain scope of the earlier name",
+			scopes: []string{"statistics-transactional:read:{mail.example.com}"},
+			want:   []string{"get_deliverability_stats", "get_bounce_stats", "get_delivery_time_stats", "get_email_stats"},
 		},
 	}
 	for _, tt := range tests {
@@ -99,6 +104,36 @@ func TestHasScope(t *testing.T) {
 	assert.True(t, hasScope([]string{"domains:write"}, "domains:write"))
 	assert.False(t, hasScope([]string{"domains:write:all"}, "domains:write"))
 	assert.False(t, hasScope(nil, "domains:write"))
+}
+
+func TestHasScopeTakesTheEarlierStatisticsName(t *testing.T) {
+	tests := []struct {
+		scope string
+		want  bool
+	}{
+		{"statistics-transactional:read:all", true},
+		{"statistics-transactional:read:{mail.example.com}", true},
+		{"statistics:read:all", true},
+		{"statistics:read:{mail.example.com}", true},
+		{"statistics-transactional:read", false},
+		{"statistics:read", false},
+		{"messages:read:all", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.scope, func(t *testing.T) {
+			assert.Equal(t, tt.want, hasScope([]string{tt.scope}, "statistics:read"))
+		})
+	}
+}
+
+// A tool requires the current name of a family. With an earlier name in the
+// family list, no key could meet it, because hasScope maps every key scope to
+// the current name.
+func TestScopeFamiliesHoldOnlyCurrentNames(t *testing.T) {
+	for earlier, current := range earlierFamilyNames {
+		assert.True(t, isScopeFamily(current), "current name %s", current)
+		assert.False(t, isScopeFamily(earlier), "earlier name %s", earlier)
+	}
 }
 
 func TestToolsetsNarrowTheList(t *testing.T) {
