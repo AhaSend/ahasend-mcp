@@ -65,7 +65,7 @@ picks scopes.
 | Toolset | Tools |
 |---|---|
 | `sending` | `send_email`, `send_conversation_email`, `send_template_email`, `cancel_scheduled_email` |
-| `diagnostics` | `list_messages`, `get_message`, `diagnose_message`, `get_deliverability_stats`, `get_bounce_stats`, `get_delivery_time_stats` |
+| `diagnostics` | `list_messages`, `get_message`, `diagnose_message`, `get_deliverability_stats`, `get_bounce_stats`, `get_delivery_time_stats`, `get_email_stats` |
 | `domains` | `list_domains`, `get_domain`, `add_domain`, `check_domain_dns`, `update_domain`, `delete_domain` |
 | `templates` | `list_templates`, `get_template`, `get_published_template`, `create_template`, `update_template`, `delete_template`, `discard_template_draft`, `publish_template`, `list_template_versions`, `get_template_version`, `restore_template_version`, `list_campaign_templates`, `get_campaign_template`, `create_campaign_template`, `update_campaign_template`, `delete_campaign_template` |
 | `audience` | `list_contacts`, `get_contact`, `create_contact`, `upsert_contacts`, `update_contact`, `delete_contact`, `list_contact_lists`, `list_lists`, `get_list`, `create_list`, `update_list`, `delete_list`, `list_list_contacts`, `add_contacts_to_list`, `upsert_list_contact`, `remove_contact_from_list`, `list_segments`, `get_segment`, `create_segment`, `update_segment`, `delete_segment`, `preview_segment`, `list_segment_contacts`, `list_contact_segments` |

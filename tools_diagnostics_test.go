@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -251,4 +252,232 @@ func TestStatisticsTools(t *testing.T) {
 			assert.Len(t, out["buckets"], 1)
 		})
 	}
+}
+
+// emailStatsRows returns n hourly rows from 2026-10-01, of domain (nil
+// without a breakdown).
+func emailStatsRows(n int, domain any) []map[string]any {
+	start := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	rows := make([]map[string]any, 0, n)
+	for i := range n {
+		from := start.Add(time.Duration(i) * time.Hour)
+		rows = append(rows, map[string]any{
+			"from_timestamp": from.Format(time.RFC3339), "to_timestamp": from.Add(time.Hour).Format(time.RFC3339),
+			"sender_domain": domain, "reception_count": 10, "delivered_count": 9, "bounced_count": 1,
+			"suppressed_count": 0, "complained_count": 0, "deferred_count": 2, "opened_count": 4, "clicked_count": 1,
+		})
+	}
+	return rows
+}
+
+// emailStatsResponse returns an email statistics response with rows. A
+// breakdown response has a next cursor.
+func emailStatsResponse(groupBy string, breakdown bool, rows []map[string]any) map[string]any {
+	resp := map[string]any{
+		"object": "email_statistics", "from_time": "2026-10-01T00:00:00Z", "to_time": "2026-11-01T00:00:00Z",
+		"group_by": groupBy, "breakdown": nil,
+		"totals": map[string]any{
+			"reception_count": 7440, "delivered_count": 6696, "bounced_count": 744, "suppressed_count": 0,
+			"complained_count": 3, "deferred_count": 1488, "opened_count": 2976, "clicked_count": 744,
+		},
+		"data":       rows,
+		"pagination": map[string]any{"has_more": false},
+	}
+	if breakdown {
+		resp["breakdown"] = "domain"
+		resp["pagination"] = map[string]any{"has_more": true, "next_cursor": "bWFpbC5leGFtcGxlLmNvbQ=="}
+	}
+	return resp
+}
+
+func TestGetEmailStatsSendsTheInputs(t *testing.T) {
+	f := newFakeAPI(t)
+	f.handle("GET "+apiPath("/statistics/emails"), http.StatusOK,
+		emailStatsResponse("day", true, emailStatsRows(2, "mail.example.com")))
+	cs := connect(t, testOptions(t, f))
+
+	out := decode[emailStatsOutput](t, callTool(t, cs, "get_email_stats", map[string]any{
+		"from_time":     "2026-10-01T10:30:00Z",
+		"to_time":       "2026-10-31T12:00:00Z",
+		"group_by":      "day",
+		"sender_domain": "mail.example.com,news.example.com",
+		"breakdown":     "domain",
+		"limit":         5,
+		"cursor":        "Y3Vyc29yLTA=",
+	}))
+
+	req := f.onlyCall(t)
+	assert.Equal(t, http.MethodGet, req.Method)
+	assert.Equal(t, apiPath("/statistics/emails"), req.Path)
+	assert.Equal(t, "2026-10-01T10:30:00Z", req.Query.Get("from_time"))
+	assert.Equal(t, "2026-10-31T12:00:00Z", req.Query.Get("to_time"))
+	assert.Equal(t, "day", req.Query.Get("group_by"))
+	assert.Equal(t, "mail.example.com,news.example.com", req.Query.Get("sender_domain"))
+	assert.Equal(t, "domain", req.Query.Get("breakdown"))
+	assert.Equal(t, "5", req.Query.Get("limit"))
+	assert.Equal(t, "Y3Vyc29yLTA=", req.Query.Get("after"))
+
+	require.Len(t, out.Buckets, 2)
+	require.NotNil(t, out.Buckets[0].SenderDomain)
+	assert.Equal(t, "mail.example.com", *out.Buckets[0].SenderDomain)
+	assert.Equal(t, int64(10), out.Buckets[0].ReceptionCount)
+	assert.Equal(t, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), out.FromTime, "the rounded range of the response")
+	assert.Equal(t, time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), out.ToTime)
+	assert.Equal(t, int64(7440), out.Totals.ReceptionCount)
+	assert.Equal(t, int64(3), out.Totals.ComplainedCount)
+	assert.Equal(t, "bWFpbC5leGFtcGxlLmNvbQ==", out.NextCursor)
+	assert.Empty(t, out.Message)
+}
+
+func TestGetEmailStatsPagesOnlyABreakdown(t *testing.T) {
+	t.Run("without a breakdown no limit or after is sent", func(t *testing.T) {
+		f := newFakeAPI(t)
+		f.handle("GET "+apiPath("/statistics/emails"), http.StatusOK, emailStatsResponse("day", false, emailStatsRows(2, nil)))
+		cs := connect(t, testOptions(t, f))
+
+		res := callTool(t, cs, "get_email_stats", map[string]any{})
+		out := decode[emailStatsOutput](t, res)
+
+		req := f.onlyCall(t)
+		assert.Empty(t, req.Query, "no input sends no parameter")
+		require.Len(t, out.Buckets, 2)
+		assert.Nil(t, out.Buckets[0].SenderDomain)
+		assert.Equal(t, int64(7440), out.Totals.ReceptionCount)
+		assert.NotContains(t, decode[map[string]any](t, res), "next_cursor")
+	})
+
+	t.Run("a breakdown without limit sends 10", func(t *testing.T) {
+		f := newFakeAPI(t)
+		f.handle("GET "+apiPath("/statistics/emails"), http.StatusOK, emailStatsResponse("day", true, emailStatsRows(1, "mail.example.com")))
+		cs := connect(t, testOptions(t, f))
+
+		res := callTool(t, cs, "get_email_stats", map[string]any{"breakdown": "domain"})
+		assert.False(t, res.IsError, resultText(res))
+
+		req := f.onlyCall(t)
+		assert.Equal(t, "10", req.Query.Get("limit"))
+		assert.NotContains(t, req.Query, "after")
+	})
+}
+
+func TestGetEmailStatsRefusesPagingInputs(t *testing.T) {
+	tests := []struct {
+		name string
+		args map[string]any
+	}{
+		{"limit of 51", map[string]any{"breakdown": "domain", "limit": 51}},
+		{"negative limit", map[string]any{"breakdown": "domain", "limit": -1}},
+		{"limit without a breakdown", map[string]any{"limit": 5}},
+		{"cursor without a breakdown", map[string]any{"cursor": "Y3Vyc29yLTA="}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeAPI(t)
+			rec := &fakeRecorder{}
+			opts := testOptions(t, f)
+			opts.Recorder = rec
+			cs := connect(t, opts)
+
+			text := requireToolError(t, callTool(t, cs, "get_email_stats", tt.args))
+			assert.Contains(t, text, "limit")
+			assert.Empty(t, f.calls())
+			assert.Equal(t, ErrorKindInvalidInput, rec.only(t).ErrorKind)
+		})
+	}
+}
+
+func TestGetEmailStatsAcceptsALimitOf50(t *testing.T) {
+	f := newFakeAPI(t)
+	f.handle("GET "+apiPath("/statistics/emails"), http.StatusOK, emailStatsResponse("day", true, emailStatsRows(1, "mail.example.com")))
+	cs := connect(t, testOptions(t, f))
+
+	res := callTool(t, cs, "get_email_stats", map[string]any{"breakdown": "domain", "limit": 50})
+	assert.False(t, res.IsError, resultText(res))
+	assert.Equal(t, "50", f.onlyCall(t).Query.Get("limit"))
+}
+
+func TestGetEmailStatsReturnsOnlyTotalsForMoreThan500Rows(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       map[string]any
+		resp       map[string]any
+		wantAdvice []string
+		noAdvice   []string
+	}{
+		{
+			name:       "without a breakdown",
+			args:       map[string]any{"group_by": "hour"},
+			resp:       emailStatsResponse("hour", false, emailStatsRows(501, nil)),
+			wantAdvice: []string{"group_by", "shorter range"},
+			noAdvice:   []string{"limit"},
+		},
+		{
+			name:       "with a breakdown",
+			args:       map[string]any{"group_by": "day", "breakdown": "domain"},
+			resp:       emailStatsResponse("day", true, emailStatsRows(501, "mail.example.com")),
+			wantAdvice: []string{"group_by", "shorter range", "lower limit"},
+		},
+		{
+			name:       "by month, which has no larger group_by",
+			args:       map[string]any{"group_by": "month", "breakdown": "domain"},
+			resp:       emailStatsResponse("month", true, emailStatsRows(501, "mail.example.com")),
+			wantAdvice: []string{"shorter range", "lower limit"},
+			noAdvice:   []string{"group_by"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeAPI(t)
+			f.handle("GET "+apiPath("/statistics/emails"), http.StatusOK, tt.resp)
+			cs := connect(t, testOptions(t, f))
+
+			res := callTool(t, cs, "get_email_stats", tt.args)
+			out := decode[emailStatsOutput](t, res)
+
+			f.onlyCall(t)
+			assert.Equal(t, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), out.FromTime)
+			assert.Equal(t, time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), out.ToTime)
+			assert.Equal(t, int64(7440), out.Totals.ReceptionCount)
+			assert.Equal(t, int64(1488), out.Totals.DeferredCount)
+			assert.Empty(t, out.Buckets)
+			assert.Empty(t, out.NextCursor)
+			raw := decode[map[string]any](t, res)
+			assert.Equal(t, []any{}, raw["buckets"])
+			assert.NotContains(t, raw, "next_cursor")
+			assert.Equal(t, "2026-10-01T00:00:00Z", raw["from_time"])
+			assert.Equal(t, "2026-11-01T00:00:00Z", raw["to_time"])
+			assert.Contains(t, out.Message, "501 rows")
+			for _, s := range tt.wantAdvice {
+				assert.Contains(t, out.Message, s)
+			}
+			for _, s := range tt.noAdvice {
+				assert.NotContains(t, out.Message, s)
+			}
+		})
+	}
+}
+
+func TestGetEmailStatsReturnsRowsUpTo500(t *testing.T) {
+	f := newFakeAPI(t)
+	f.handle("GET "+apiPath("/statistics/emails"), http.StatusOK, emailStatsResponse("hour", true, emailStatsRows(500, "mail.example.com")))
+	cs := connect(t, testOptions(t, f))
+
+	out := decode[emailStatsOutput](t, callTool(t, cs, "get_email_stats", map[string]any{"group_by": "hour", "breakdown": "domain"}))
+	assert.Len(t, out.Buckets, 500)
+	assert.Equal(t, int64(7440), out.Totals.ReceptionCount)
+	assert.Equal(t, "bWFpbC5leGFtcGxlLmNvbQ==", out.NextCursor)
+	assert.Empty(t, out.Message)
+}
+
+func TestGetEmailStatsDescriptionGivesEachCounter(t *testing.T) {
+	for _, counter := range []string{
+		"reception_count", "delivered_count", "bounced_count", "suppressed_count",
+		"complained_count", "deferred_count", "opened_count", "clicked_count",
+	} {
+		assert.Contains(t, emailStatsDescription, counter)
+	}
+	assert.Contains(t, emailStatsDescription, "answers most questions")
+	assert.Contains(t, emailStatsDescription, "need week or month")
+	assert.Contains(t, emailStatsDescription, "billing counts the same messages")
+	assert.Contains(t, emailStatsDescription, "range that totals covers")
 }

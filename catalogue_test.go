@@ -65,6 +65,7 @@ func TestCatalogueScopesAndAnnotations(t *testing.T) {
 		{"get_deliverability_stats", ToolsetDiagnostics, []string{"statistics-transactional:read"}, read},
 		{"get_bounce_stats", ToolsetDiagnostics, []string{"statistics-transactional:read"}, read},
 		{"get_delivery_time_stats", ToolsetDiagnostics, []string{"statistics-transactional:read"}, read},
+		{"get_email_stats", ToolsetDiagnostics, []string{"statistics-transactional:read"}, read},
 		{"list_domains", ToolsetDomains, []string{"domains:read"}, read},
 		{"get_domain", ToolsetDomains, []string{"domains:read"}, read},
 		{"add_domain", ToolsetDomains, []string{"domains:write"}, write},

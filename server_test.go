@@ -78,7 +78,7 @@ func TestScopesHideAndShowTools(t *testing.T) {
 		{
 			name:   "domain delete through a domain scope",
 			scopes: []string{"domains:delete:{mail.example.com}", "statistics-transactional:read:all"},
-			want:   []string{"delete_domain", "get_deliverability_stats", "get_bounce_stats", "get_delivery_time_stats"},
+			want:   []string{"delete_domain", "get_deliverability_stats", "get_bounce_stats", "get_delivery_time_stats", "get_email_stats"},
 		},
 	}
 	for _, tt := range tests {
