@@ -54,7 +54,7 @@ func managementTools() []tool {
 		}, "Creates a webhook that posts the chosen email events to a URL, for every sending domain or only "+
 			"the domains given. A webhook for every domain needs the webhooks:write:all scope; a connection "+
 			"limited to some domains must list them in domains. Use it when the user's app needs delivery, bounce, open, click, unsubscribe, "+
-			"complaint, suppression or contact events. Contact events need the contacts:read scope and the account's marketing features; "+
+			"complaint, suppression, domain or contact events. Contact events need the contacts:read scope and the account's marketing features; "+
 			"the added_to_list, removed_from_list, subscribed, unsubscribed and complained ones also need lists:read. The result holds the webhook's signing secret, which the app needs to verify the posts; "+
 			"AhaSend returns it only in this result.",
 			createWebhook),
@@ -299,6 +299,7 @@ type webhookEvents struct {
 	OnClicked                bool `json:"on_clicked" jsonschema:"A tracked link was clicked."`
 	OnSuppressionCreated     bool `json:"on_suppression_created" jsonschema:"suppression.created: a recipient was suppressed, such as after a bounce, a spam report, a transactional unsubscribe or an API call."`
 	OnDNSError               bool `json:"on_dns_error" jsonschema:"A DNS problem was found on a sending domain."`
+	OnSendingTypeChanged     bool `json:"on_sending_type_changed" jsonschema:"The sending type of a domain changed between transactional and marketing."`
 	OnUnsubscribed           bool `json:"on_unsubscribed" jsonschema:"message.unsubscribed: a recipient unsubscribed through a campaign email's link or one-click unsubscribe."`
 	OnComplained             bool `json:"on_complained" jsonschema:"message.complained: a mailbox provider reported a campaign email as spam."`
 	OnSuppressionDeleted     bool `json:"on_suppression_deleted" jsonschema:"suppression.deleted: a suppression was deleted through the API or the dashboard, or by AhaSend; deleting all suppressions at once and the removal of expired ones send none."`
@@ -324,6 +325,7 @@ type webhookEventChanges struct {
 	OnClicked                *bool `json:"on_clicked,omitempty" jsonschema:"A tracked link was clicked."`
 	OnSuppressionCreated     *bool `json:"on_suppression_created,omitempty" jsonschema:"suppression.created: a recipient was suppressed, such as after a bounce, a spam report, a transactional unsubscribe or an API call."`
 	OnDNSError               *bool `json:"on_dns_error,omitempty" jsonschema:"A DNS problem was found on a sending domain."`
+	OnSendingTypeChanged     *bool `json:"on_sending_type_changed,omitempty" jsonschema:"The sending type of a domain changed between transactional and marketing."`
 	OnUnsubscribed           *bool `json:"on_unsubscribed,omitempty" jsonschema:"message.unsubscribed: a recipient unsubscribed through a campaign email's link or one-click unsubscribe."`
 	OnComplained             *bool `json:"on_complained,omitempty" jsonschema:"message.complained: a mailbox provider reported a campaign email as spam."`
 	OnSuppressionDeleted     *bool `json:"on_suppression_deleted,omitempty" jsonschema:"suppression.deleted: a suppression was deleted through the API or the dashboard, or by AhaSend; deleting all suppressions at once and the removal of expired ones send none."`
@@ -371,6 +373,7 @@ func webhookFrom(w *responses.Webhook) webhookOutput {
 			OnClicked:                w.OnClicked,
 			OnSuppressionCreated:     w.OnSuppressionCreated,
 			OnDNSError:               w.OnDNSError,
+			OnSendingTypeChanged:     w.OnSendingTypeChanged,
 			OnUnsubscribed:           w.OnUnsubscribed,
 			OnComplained:             w.OnComplained,
 			OnSuppressionDeleted:     w.OnSuppressionDeleted,
@@ -449,7 +452,7 @@ type createWebhookInput struct {
 	URL     string   `json:"url" jsonschema:"URL to post the events to."`
 	Enabled *bool    `json:"enabled,omitempty" jsonschema:"false to create it disabled. Default true."`
 	Domains []string `json:"domains,omitempty" jsonschema:"Sending domains whose events it posts; omit for every domain, which needs the webhooks:write:all scope."`
-	Origins []string `json:"origins,omitempty" jsonschema:"Origins whose contact and suppression events it gets: recipient (an unsubscribe link, a one-click unsubscribe or a spam complaint), api (writes through the AhaSend API, including this connection's tools), dashboard (the AhaSend dashboard), system (AhaSend itself, such as after a bounce). Message and DNS events ignore it. Omit for every origin. Leave out api when the app writes contacts back through the API, or each write comes back as an event."`
+	Origins []string `json:"origins,omitempty" jsonschema:"Origins whose contact and suppression events it gets: recipient (an unsubscribe link, a one-click unsubscribe or a spam complaint), api (writes through the AhaSend API, including this connection's tools), dashboard (the AhaSend dashboard), system (AhaSend itself, such as after a bounce). Message and domain events ignore it. Omit for every origin. Leave out api when the app writes contacts back through the API, or each write comes back as an event."`
 	webhookEventChanges
 }
 
@@ -472,6 +475,7 @@ func createWebhook(ctx context.Context, env *toolEnv, in createWebhookInput) (we
 		OnClicked:                deref(e.OnClicked),
 		OnSuppressionCreated:     deref(e.OnSuppressionCreated),
 		OnDnsError:               deref(e.OnDNSError),
+		OnSendingTypeChanged:     deref(e.OnSendingTypeChanged),
 		OnUnsubscribed:           deref(e.OnUnsubscribed),
 		OnComplained:             deref(e.OnComplained),
 		OnSuppressionDeleted:     deref(e.OnSuppressionDeleted),
@@ -504,7 +508,7 @@ type updateWebhookInput struct {
 	Enabled    *bool    `json:"enabled,omitempty" jsonschema:"true to enable, false to disable."`
 	Domains    []string `json:"domains,omitempty" jsonschema:"Limit the webhook to these sending domains. Not with all_domains."`
 	AllDomains bool     `json:"all_domains,omitempty" jsonschema:"True to post events of every sending domain; needs the webhooks:write:all scope. Not with domains."`
-	Origins    []string `json:"origins,omitempty" jsonschema:"Replaces the origins whose contact and suppression events it gets: recipient (an unsubscribe link, a one-click unsubscribe or a spam complaint), api (writes through the AhaSend API, including this connection's tools), dashboard (the AhaSend dashboard), system (AhaSend itself, such as after a bounce). Message and DNS events ignore it. Omit to keep them; give all four for every origin."`
+	Origins    []string `json:"origins,omitempty" jsonschema:"Replaces the origins whose contact and suppression events it gets: recipient (an unsubscribe link, a one-click unsubscribe or a spam complaint), api (writes through the AhaSend API, including this connection's tools), dashboard (the AhaSend dashboard), system (AhaSend itself, such as after a bounce). Message and domain events ignore it. Omit to keep them; give all four for every origin."`
 	webhookEventChanges
 }
 
@@ -534,6 +538,7 @@ func updateWebhook(ctx context.Context, env *toolEnv, in updateWebhookInput) (we
 		OnClicked:                e.OnClicked,
 		OnSuppressionCreated:     e.OnSuppressionCreated,
 		OnDnsError:               e.OnDNSError,
+		OnSendingTypeChanged:     e.OnSendingTypeChanged,
 		OnUnsubscribed:           e.OnUnsubscribed,
 		OnComplained:             e.OnComplained,
 		OnSuppressionDeleted:     e.OnSuppressionDeleted,

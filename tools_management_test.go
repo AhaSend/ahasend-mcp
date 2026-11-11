@@ -1,6 +1,7 @@
 package ahasendmcp
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -58,7 +59,7 @@ func TestManagementTools(t *testing.T) {
 				"name": "App events", "url": "https://app.example.com/hooks",
 				"on_reception": false, "on_delivered": true, "on_transient_error": false, "on_failed": false,
 				"on_bounced": true, "on_suppressed": false, "on_opened": false, "on_clicked": false,
-				"on_suppression_created": false, "on_dns_error": false,
+				"on_suppression_created": false, "on_dns_error": false, "on_sending_type_changed": false,
 				// ahasend-go sends every event setting, so the ones not given go as false.
 				"on_unsubscribed": false, "on_complained": false, "on_suppression_deleted": false,
 				"on_contact_created": false, "on_contact_updated": false, "on_contact_deleted": false,
@@ -354,10 +355,10 @@ func TestWebhookToolsRefuseAnEmptyOrUnknownOrigin(t *testing.T) {
 	assert.Empty(t, f.calls())
 }
 
-// newWebhookSettings are the event settings that came with the contact,
-// unsubscribe, complaint and suppression.deleted events.
+// newWebhookSettings are the event settings whose wiring is checked one by
+// one: each reaches its own field and no other.
 var newWebhookSettings = []string{
-	"on_unsubscribed", "on_complained", "on_suppression_deleted",
+	"on_unsubscribed", "on_complained", "on_suppression_deleted", "on_dns_error", "on_sending_type_changed",
 	"on_contact_created", "on_contact_updated", "on_contact_deleted",
 	"on_contact_added_to_list", "on_contact_removed_from_list",
 	"on_contact_subscribed", "on_contact_unsubscribed", "on_contact_complained",
@@ -418,4 +419,82 @@ func TestWebhookOutputShowsTheNewEventsAndOrigins(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpdateWebhookSendsTheSendingTypeSettingOnlyWhenGiven(t *testing.T) {
+	webhook := "/webhooks/" + testWebhookID
+	tests := []struct {
+		name string
+		args map[string]any
+		want map[string]any
+	}{
+		{"not given", map[string]any{"on_dns_error": true}, map[string]any{"on_dns_error": true}},
+		{"given false", map[string]any{"on_sending_type_changed": false}, map[string]any{"on_sending_type_changed": false}},
+		{"given true", map[string]any{"on_sending_type_changed": true}, map[string]any{"on_sending_type_changed": true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := map[string]any{"webhook_id": testWebhookID}
+			for k, v := range tt.args {
+				args[k] = v
+			}
+			runToolCases(t, []toolCase{{
+				tool: "update_webhook", args: args,
+				method: http.MethodPut, path: webhook, resp: webhookJSON(""),
+				wantBody: tt.want,
+			}})
+		})
+	}
+}
+
+func TestWebhookOutputShowsTheSendingTypeSetting(t *testing.T) {
+	w := webhookJSON("")
+	w["on_sending_type_changed"] = true
+	f := newFakeAPI(t)
+	f.handle("GET "+apiPath("/webhooks"), http.StatusOK, page(w))
+	f.handle("GET "+apiPath("/webhooks/"+testWebhookID), http.StatusOK, w)
+	cs := connect(t, testOptions(t, f))
+
+	listed := decode[map[string]any](t, callTool(t, cs, "list_webhooks", map[string]any{}))
+	got := decode[map[string]any](t, callTool(t, cs, "get_webhook", map[string]any{"webhook_id": testWebhookID}))
+	assert.Equal(t, true, field(t, listed, "webhooks.0.on_sending_type_changed"))
+	assert.Equal(t, true, got["on_sending_type_changed"])
+	assert.Equal(t, false, got["on_dns_error"])
+}
+
+func TestWebhookSchemasHaveTheSendingTypeSetting(t *testing.T) {
+	cs := connect(t, testOptions(t, newFakeAPI(t)))
+	res, err := cs.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	type schema struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	schemas := map[string][2]schema{}
+	for _, tl := range res.Tools {
+		var in, out schema
+		raw, err := json.Marshal(tl.InputSchema)
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal(raw, &in))
+		raw, err = json.Marshal(tl.OutputSchema)
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal(raw, &out))
+		schemas[tl.Name] = [2]schema{in, out}
+	}
+
+	const text = "The sending type of a domain changed between transactional and marketing."
+	for _, tool := range []string{"create_webhook", "update_webhook"} {
+		in := schemas[tool][0]
+		require.Contains(t, in.Properties, "on_sending_type_changed", tool)
+		assert.Equal(t, text, in.Properties["on_sending_type_changed"].Description, tool)
+		assert.NotContains(t, in.Required, "on_sending_type_changed", "%s: optional, like on_dns_error", tool)
+		assert.NotContains(t, in.Required, "on_dns_error", tool)
+	}
+	out := schemas["get_webhook"][1]
+	require.Contains(t, out.Properties, "on_sending_type_changed")
+	assert.Equal(t, text, out.Properties["on_sending_type_changed"].Description)
+	assert.Contains(t, out.Required, "on_sending_type_changed", "always returned, like on_dns_error")
+	assert.Contains(t, out.Required, "on_dns_error")
 }
